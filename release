@@ -151,7 +151,7 @@ generate_ssl_certs() {
     local target_dir=$1
     echo -e "${BLUE}Генерация самоподписанных SSL-сертификатов в $target_dir...${NC}"
     mkdir -p "$target_dir"
-    openssl req -x509 -newkey rsa:2048 -keyout "$target_dir/server.key" -out "$target_dir/server.crt" -sha256 -days 3650 -nodes -subj "/CN=your-server" 2>/dev/null
+    openssl req -x509 -newkey rsa:2048 -keyout "$target_dir/server.key" -out "$target_dir/server.crt" -sha256 -days 3650 -days 3650 -nodes -subj "/CN=your-server" 2>/dev/null
 }
 
 setup_singbox() {
@@ -201,6 +201,35 @@ if [ "$INSTALL_MODE" -eq 1 ]; then
     echo -e "${BLUE}Сборка React фронтенда...${NC}"
     cd "$INSTALL_DIR/vpn-frontend"
     echo "VITE_API_BASE_URL=" > .env.production
+    if [ ! -f "$INSTALL_DIR/vpn-frontend/index.html" ]; then
+        cat << 'EOF' > "$INSTALL_DIR/vpn-frontend/index.html"
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AimatosPanel</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+EOF
+    fi
+    if [ ! -f "$INSTALL_DIR/vpn-frontend/vite.config.js" ] && [ ! -f "$INSTALL_DIR/vpn-frontend/vite.config.ts" ]; then
+        cat << 'EOF' > "$INSTALL_DIR/vpn-frontend/vite.config.js"
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+export default defineConfig({
+  plugins: [
+    react(),
+    tailwindcss()
+  ],
+})
+EOF
+    fi
     npm install
     npm run build
     rm -rf "$INSTALL_DIR/vpn-master/dist"
@@ -285,6 +314,35 @@ elif [ "$INSTALL_MODE" -eq 2 ]; then
             cp -r "$FRONTEND_SRC"/* "$INSTALL_DIR/vpn-frontend/"
             cd "$INSTALL_DIR/vpn-frontend"
             echo "VITE_API_BASE_URL=$BACKEND_URL" > .env.production
+            if [ ! -f "$INSTALL_DIR/vpn-frontend/index.html" ]; then
+                cat << 'EOF' > "$INSTALL_DIR/vpn-frontend/index.html"
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AimatosPanel</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+EOF
+            fi
+            if [ ! -f "$INSTALL_DIR/vpn-frontend/vite.config.js" ] && [ ! -f "$INSTALL_DIR/vpn-frontend/vite.config.ts" ]; then
+                cat << 'EOF' > "$INSTALL_DIR/vpn-frontend/vite.config.js"
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+export default defineConfig({
+  plugins: [
+    react(),
+    tailwindcss()
+  ],
+})
+EOF
+            fi
             npm install
             npm run build
             go build -o server-bin server.go
@@ -303,6 +361,35 @@ elif [ "$INSTALL_MODE" -eq 2 ]; then
             cp -r "$FRONTEND_SRC"/* "$INSTALL_DIR/vpn-frontend/"
             cd "$INSTALL_DIR/vpn-frontend"
             echo "VITE_API_BASE_URL=" > .env.production
+            if [ ! -f "$INSTALL_DIR/vpn-frontend/index.html" ]; then
+                cat << 'EOF' > "$INSTALL_DIR/vpn-frontend/index.html"
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AimatosPanel</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+EOF
+            fi
+            if [ ! -f "$INSTALL_DIR/vpn-frontend/vite.config.js" ] && [ ! -f "$INSTALL_DIR/vpn-frontend/vite.config.ts" ]; then
+                cat << 'EOF' > "$INSTALL_DIR/vpn-frontend/vite.config.js"
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+export default defineConfig({
+  plugins: [
+    react(),
+    tailwindcss()
+  ],
+})
+EOF
+            fi
             npm install
             npm run build
             rm -rf "$INSTALL_DIR/vpn-master/dist"
