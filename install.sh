@@ -29,8 +29,17 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 TEMPLATES_DIR="$SCRIPT_DIR/templates"
 
 if [ ! -d "$TEMPLATES_DIR" ]; then
-    echo -e "${RED}Ошибка: Папка с шаблонами '$TEMPLATES_DIR' не найдена.${NC}"
-    exit 1
+    echo -e "${YELLOW}Локальная папка с шаблонами не найдена. Загрузка шаблонов из сети...${NC}"
+    TEMPLATES_DIR="/tmp/aimatos-templates"
+    mkdir -p "$TEMPLATES_DIR"
+    BASE_URL="https://aimatospanel.github.io/vpn-installer/templates"
+    for template in vpn-master.service vpn-node.service vpn-frontend-standalone.service; do
+        curl -sL "$BASE_URL/$template" -o "$TEMPLATES_DIR/$template"
+        if [ ! -s "$TEMPLATES_DIR/$template" ]; then
+            echo -e "${RED}Ошибка: Не удалось загрузить шаблон $template с $BASE_URL/$template${NC}"
+            exit 1
+        fi
+    done
 fi
 
 INSTALL_DIR="/opt/aimatos"
@@ -125,8 +134,9 @@ esac
 
 generate_ssl_certs() {
     local target_dir=$1
+    echo -e "${BLUE}Генерация самоподписанных SSL-сертификатов в $target_dir...${NC}"
     mkdir -p "$target_dir"
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -keyout "$target_dir/server.key" -out "$target_dir/server.crt" -sha256 -days 3650 -nodes -subj "/CN=your-server" 2>/dev/null
+    openssl req -x509 -newkey rsa:2048 -keyout "$target_dir/server.key" -out "$target_dir/server.crt" -sha256 -days 3650 -nodes -subj "/CN=your-server" 2>/dev/null
 }
 
 setup_singbox() {
@@ -144,16 +154,16 @@ setup_singbox() {
 
 configure_ufw() {
     echo -e "${BLUE}Настройка брандмауэра UFW...${NC}"
-    ufw allow 22/tcp
-    ufw allow 8080/tcp
-    ufw allow 8085/tcp
-    ufw allow 8443/tcp
-    ufw allow 8447/tcp
-    ufw allow 8444/tcp
-    ufw allow 8444/udp
-    ufw allow 8445/udp
-    ufw allow 8446/tcp
-    ufw allow 20000:20050/udp
+    ufw allow 22/tcp comment 'SSH'
+    ufw allow 8080/tcp comment 'Aimatos Master Web API'
+    ufw allow 8085/tcp comment 'Aimatos Node API'
+    ufw allow 8443/tcp comment 'VLESS TCP'
+    ufw allow 8447/tcp comment 'VLESS gRPC'
+    ufw allow 8444/tcp comment 'Hysteria 2'
+    ufw allow 8444/udp comment 'Hysteria 2 UDP'
+    ufw allow 8445/udp comment 'TUIC'
+    ufw allow 8446/tcp comment 'NaiveProxy'
+    ufw allow 20000:20050/udp comment 'Hysteria 2 Port Hopping'
     ufw --force enable
 }
 
@@ -192,6 +202,7 @@ if [ "$INSTALL_MODE" -eq 1 ]; then
     if command -v netfilter-persistent &> /dev/null; then
         netfilter-persistent save || true
     fi
+    echo -e "${BLUE}Генерация конфигураций systemd из шаблонов...${NC}"
     sed -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
         -e "s|{{PORT}}|8080|g" \
         "$TEMPLATES_DIR/vpn-master.service" > /etc/systemd/system/vpn-master.service
@@ -209,6 +220,7 @@ if [ "$INSTALL_MODE" -eq 1 ]; then
     fi
     systemctl restart vpn-node.service
     configure_ufw
+
 elif [ "$INSTALL_MODE" -eq 2 ]; then
     echo -e "\n${BLUE}Выборочная установка компонентов панели...${NC}"
     echo "1) Только бэкенд (vpn-master)"
@@ -299,10 +311,16 @@ elif [ "$INSTALL_MODE" -eq 2 ]; then
 fi
 
 echo -e "${BLUE}Интеграция утилиты командной строки 'aimatos'...${NC}"
+if [ -f "$SCRIPT_DIR/aimatos-cli.sh" ]; then
+    cp "$SCRIPT_DIR/aimatos-cli.sh" "$INSTALL_DIR/aimatos-cli.sh"
+else
+    echo -e "${YELLOW}Загрузка aimatos-cli.sh из сети...${NC}"
+    curl -sL "https://aimatospanel.github.io/vpn-installer/aimatos-cli.sh" -o "$INSTALL_DIR/aimatos-cli.sh"
+fi
+chmod +x "$INSTALL_DIR/aimatos-cli.sh"
+
 cat << 'EOF' > /usr/local/bin/aimatos
 #!/bin/bash
 /opt/aimatos/aimatos-cli.sh "$@"
 EOF
 chmod +x /usr/local/bin/aimatos
-
-echo -e "${GREEN}AimatosPanel успешно установлена!${NC}"
