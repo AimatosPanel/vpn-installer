@@ -11,8 +11,13 @@ echo -e "${BLUE}          AimatosPanel Автоматический Устано
 echo -e "${BLUE}====================================================${NC}"
 
 if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Ошибка: Запустите скрипт под root пользователем (sudo).${NC}"
-    exit 1
+    echo -e "${YELLOW}Запуск не от имени root. Перезапуск с правами sudo...${NC}"
+    if [ -f "$0" ] && [[ "$0" == *"install.sh"* ]]; then
+        sudo bash "$0" "$@"
+    else
+        sudo bash -c "$(curl -sL https://aimatospanel.github.io/vpn-installer/release)"
+    fi
+    exit $?
 fi
 
 OS_NAME=$(lsb_release -is 2>/dev/null || cat /etc/os-release | grep -oP '(?<=^ID=).+' | tr -d '"')
