@@ -380,9 +380,9 @@ func (m *model) setupSimpleSteps() {
 </html>
 EOF`},
 		{Name: "Сборка веб-интерфейса (React Vite)", Command: "cd /opt/aimatos/vpn-frontend && npm install && npm run build && rm -rf /opt/aimatos/vpn-master/dist && cp -r /opt/aimatos/vpn-frontend/dist /opt/aimatos/vpn-master/dist"},
-		{Name: "Компиляция ядра Master-сервера (Go)", Command: "cd /opt/aimatos/vpn-master && go build -o vpn-master ."},
-		{Name: "Компиляция прокси-модуля Node (Go)", Command: "cd /opt/aimatos/vpn-node && go build -o vpn-node ."},
-		{Name: "Компиляция утилиты управления CLI", Command: "cd /opt/aimatos/aimatos-cli && go mod init aimatos-cli 2>/dev/null || true; go get github.com/charmbracelet/bubbletea github.com/charmbracelet/bubbles github.com/charmbracelet/lipgloss modernc.org/sqlite && go build -o /usr/local/bin/aimatos ."},
+		{Name: "Компиляция ядра Master-сервера (Go)", Command: "cd /opt/aimatos/vpn-master && go mod tidy && go build -o vpn-master ."},
+		{Name: "Компиляция прокси-модуля Node (Go)", Command: "cd /opt/aimatos/vpn-node && go mod tidy && go build -o vpn-node ."},
+		{Name: "Компиляция утилиты управления CLI", Command: "cd /opt/aimatos/aimatos-cli && go mod init aimatos-cli 2>/dev/null || true && go get github.com/charmbracelet/bubbletea github.com/charmbracelet/bubbles github.com/charmbracelet/lipgloss modernc.org/sqlite && go mod tidy && go build -o /usr/local/bin/aimatos ."},
 		{Name: "Интеграция сетевого ядра Sing-Box", Command: "cd /opt/aimatos/vpn-node && curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.8.5/sing-box-1.8.5-linux-amd64.tar.gz && tar -xzf sing-box.tar.gz --strip-components=1 && rm sing-box.tar.gz && chmod +x sing-box"},
 		{Name: "Генерация сертификатов SSL", Command: "openssl req -x509 -newkey rsa:2048 -keyout /opt/aimatos/vpn-node/server.key -out /opt/aimatos/vpn-node/server.crt -sha256 -days 3650 -nodes -subj '/CN=your-server'"},
 		{Name: "Регистрация системных служб Systemd", Command: fmt.Sprintf(`
