@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -49,6 +50,24 @@ type model struct {
 }
 
 type stepResultMsg struct{ err error }
+
+// Функция считывания объема RAM из системы (в килобайтах)
+func getSystemRAM_KB() (uint64, error) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "MemTotal:" {
+			var total uint64
+			_, err := fmt.Sscanf(fields[1], "%d", &total)
+			return total, err
+		}
+	}
+	return 0, fmt.Errorf("показатель MemTotal не обнаружен")
+}
 
 func runSystemCommand(command string) tea.Cmd {
 	return func() tea.Msg {
@@ -294,11 +313,39 @@ func (m *model) setupSimpleSteps() {
 	if frontendPath == "" { frontendPath = "../vpn-frontend" }
 	if cliPath == "" { cliPath = "./aimatos-cli" }
 
+	// Определение объема оперативной памяти
+	ramKB, err := getSystemRAM_KB()
+	needsSwap := false
+	var swapComment string
+	if err == nil {
+		// Если RAM < 2,000,000 KB (~2 GB), инициируем создание Swap
+		if ramKB < 2048000 {
+			needsSwap = true
+			swapComment = fmt.Sprintf("RAM: %.2f GB", float64(ramKB)/1024.0/1024.0)
+		}
+	}
+
 	m.steps = []installStep{
 		{Name: "Инициализация каталогов (/opt/aimatos)", Command: "mkdir -p /opt/aimatos/vpn-master /opt/aimatos/vpn-node /opt/aimatos/vpn-frontend /opt/aimatos/backups /opt/aimatos/aimatos-cli"},
 		{Name: "Снятие фоновых блокировок dpkg/apt", Command: "systemctl stop unattended-upgrades 2>/dev/null || true; systemctl stop apt-daily.service 2>/dev/null || true; killall apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a"},
+	}
+
+	// Динамически внедряем шаг конфигурации Swap
+	if needsSwap {
+		m.steps = append(m.steps, installStep{
+			Name: "Настройка Swap-файла 2GB (" + swapComment + ")",
+			Command: "if [ ! -f /swapfile ]; then " +
+				"fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048; " +
+				"chmod 600 /swapfile; " +
+				"mkswap /swapfile && swapon /swapfile; " +
+				"echo '/swapfile none swap sw 0 0' >> /etc/fstab; " +
+				"fi",
+		})
+	}
+
+	m.steps = append(m.steps, []installStep{
 		{Name: "Синхронизация пакетной базы APT", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get update -y"},
-		{Name: "Развертывание пакетов окружения", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' libcurl4t64 curl git openssl sqlite3 build-essential ufw"},
+		{Name: "Развертывание базовых пакетов окружения", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' libcurl4t64 curl git openssl sqlite3 build-essential ufw"},
 		{Name: "Настройка репозитория Node.js (V20 LTS)", Command: "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -"},
 		{Name: "Установка платформы Node.js & NPM", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get install -y nodejs"},
 		{Name: "Загрузка Go-lang компилятора (v1.22)", Command: "wget -q https://golang.org/dl/go1.22.2.linux-amd64.tar.gz -O /tmp/go.tar.gz"},
@@ -387,7 +434,10 @@ EOF
                 systemctl restart vpn-node.service aimatos-port-hop.service
             `, m.apiKey, m.apiKey)},
 		{Name: "Настройка UFW брандмауэра", Command: "ufw allow 22/tcp && ufw allow 8080/tcp && ufw allow 8085/tcp && ufw allow 8443/tcp && ufw allow 8447/tcp && ufw allow 8444/tcp && ufw allow 8444/udp && ufw allow 8445/udp && ufw allow 8446/tcp && ufw allow 20000:20050/udp && echo 'y' | ufw enable"},
-	}
+		{Name: "Оптимизация сетевых параметров (BBR)", Command: "sysctl -w net.core.default_qdisc=fq && sysctl -w net.ipv4.tcp_congestion_control=bbr && (grep -q 'net.core.default_qdisc=fq' /etc/sysctl.conf || echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf) && (grep -q 'net.ipv4.tcp_congestion_control=bbr' /etc/sysctl.conf || echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf) && sysctl -p"},
+		{Name: "Очистка сборочного окружения и мусора", Command: "rm -rf /opt/aimatos/vpn-frontend /opt/aimatos/aimatos-cli /tmp/aimatos-source && apt-get purge -y nodejs && rm -f /etc/apt/sources.list.d/nodesource.list && rm -rf /usr/local/go /usr/bin/go && apt-get autoremove -y && apt-get clean"},
+	}...)
+
 	m.steps[0].Status = "running"
 }
 
