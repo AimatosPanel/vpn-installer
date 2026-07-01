@@ -20,11 +20,14 @@ var (
 	pinkColor   = lipgloss.Color("205")
 	grayColor   = lipgloss.Color("244")
 
-	titleStyle = lipgloss.NewStyle().Foreground(pinkColor).Bold(true).Align(lipgloss.Center)
-	windowStyle = lipgloss.NewStyle().Border(lipgloss.DoubleBorder()).BorderForeground(accentColor).Padding(1, 4).Width(68).Height(18)
-	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("46")).Bold(true)
-	failStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	focusStyle   = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	titleStyle    = lipgloss.NewStyle().Foreground(pinkColor).Bold(true).Align(lipgloss.Center)
+	subtitleStyle = lipgloss.NewStyle().Foreground(grayColor).Align(lipgloss.Center)
+	windowStyle   = lipgloss.NewStyle().Border(lipgloss.DoubleBorder()).BorderForeground(accentColor).Padding(1, 4).Width(68).Height(18)
+	successStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("46")).Bold(true)
+	failStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	focusStyle    = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	grayStyle     = lipgloss.NewStyle().Foreground(grayColor)
+	helpStyle     = lipgloss.NewStyle().Foreground(grayColor).Align(lipgloss.Center)
 )
 
 const DB_PATH = "/opt/aimatos/vpn-master/panel.db"
