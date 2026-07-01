@@ -341,6 +341,7 @@ func (m *model) setupSimpleSteps() {
 
 	m.steps = []installStep{
 		{Name: "Инициализация каталогов (/opt/aimatos)", Command: "mkdir -p /opt/aimatos/vpn-master /opt/aimatos/vpn-node /opt/aimatos/vpn-frontend /opt/aimatos/backups /opt/aimatos/aimatos-cli"},
+		{Name: "Остановка активных служб панели (апгрейд)", Command: "systemctl stop vpn-master.service vpn-node.service aimatos-port-hop.service sing-box.service 2>/dev/null || true; killall vpn-master vpn-node sing-box 2>/dev/null || true; rm -f /opt/aimatos/vpn-master/vpn-master /opt/aimatos/vpn-node/vpn-node /opt/aimatos/vpn-node/sing-box /usr/local/bin/aimatos 2>/dev/null || true"},
 		{Name: "Снятие фоновых блокировок dpkg/apt", Command: "systemctl stop unattended-upgrades 2>/dev/null || true; systemctl stop apt-daily.service 2>/dev/null || true; killall apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a"},
 	}
 
