@@ -1,8 +1,11 @@
+// Файл: vpn-installer\aimatos-cli\main.go
 package main
 
 import (
 	"database/sql"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +49,9 @@ const (
 	stateToolsMenu
 )
 
+// Специальное сообщение об окончании просмотра логов
+type logFinishedMsg struct{ err error }
+
 type model struct {
 	state       menuState
 	mainChoice  int
@@ -62,6 +68,22 @@ type model struct {
 	apiKey      string
 	statusStr   string
 	usersStr    string
+	serverIP    string // Хранение реального IP
+}
+
+// Функция для получения внешнего IP сервера
+func getPublicIP() string {
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("https://api.ipify.org")
+	if err != nil {
+		return "127.0.0.1" // Фолбек при отсутствии интернета
+	}
+	defer resp.Body.Close()
+	ip, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "127.0.0.1"
+	}
+	return string(ip)
 }
 
 func initialModel() model {
@@ -98,6 +120,7 @@ func initialModel() model {
 		spinner:    s,
 		db:         db,
 		outputMsg:  "",
+		serverIP:   getPublicIP(), // Получаем IP при запуске TUI
 	}
 }
 
@@ -110,6 +133,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
 		m.termHeight = msg.Height
+		return m, nil
+
+	// Обработка возврата из просмотра логов
+	case logFinishedMsg:
+		m.state = stateMain
+		if msg.err != nil {
+			m.outputMsg = "Журнал логов закрыт с кодом: " + msg.err.Error()
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -136,7 +167,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.mainChoice++
 				}
 			case "enter":
-				m.handleMainMenuSelection()
+				// Обрабатываем выбор и проверяем, нужно ли выполнить внешнюю команду (логи)
+				cmd := m.handleMainMenuSelection()
+				if cmd != nil {
+					return m, cmd
+				}
 			}
 
 		case stateUsersMenu:
@@ -208,7 +243,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *model) handleMainMenuSelection() {
+// Изменена сигнатура для возврата tea.Cmd
+func (m *model) handleMainMenuSelection() tea.Cmd {
 	switch m.mainChoice {
 	case 0:
 		m.state = stateStatus
@@ -226,20 +262,11 @@ func (m *model) handleMainMenuSelection() {
 		m.state = statePortsMenu
 		m.portsChoice = 0
 	case 4:
-		m.db.Close()
-		cmd := exec.Command("clear")
-		cmd.Stdout = os.Stdout
-		_ = cmd.Run()
-
-		journal := exec.Command("journalctl", "-u", "vpn-master.service", "-n", "50", "-f")
-		journal.Stdin = os.Stdin
-		journal.Stdout = os.Stdout
-		journal.Stderr = os.Stderr
-		_ = journal.Run()
-
-		db, _ := sql.Open("sqlite", DB_PATH)
-		m.db = db
-		m.state = stateMain
+		// ПРАВИЛЬНЫЙ ВЫЗОВ ЛОГОВ БЕЗ ПОЛОМКИ ТЕРМИНАЛА
+		c := exec.Command("journalctl", "-u", "vpn-master.service", "-n", "50", "-f")
+		return tea.ExecProcess(c, func(err error) tea.Msg {
+			return logFinishedMsg{err}
+		})
 	case 5:
 		m.state = stateToolsMenu
 		m.toolsChoice = 0
@@ -247,6 +274,7 @@ func (m *model) handleMainMenuSelection() {
 		m.db.Close()
 		os.Exit(0)
 	}
+	return nil
 }
 
 func getSysStats() string {
@@ -402,7 +430,8 @@ func (m model) renderContent() string {
 
 	case stateLinks:
 		s += titleStyle.Render("🔗 Ссылки авторизации администратора ") + "\n\n"
-		s += "  Адрес веб-панели: http://<IP_СЕРВЕРА>:8080\n"
+		// ИСПОЛЬЗУЕМ ДИНАМИЧЕСКИЙ IP-АДРЕС ВМЕСТО ПЛЕЙСХОЛДЕРА
+		s += fmt.Sprintf("  Адрес веб-панели: http://%s:8080\n", m.serverIP)
 		s += fmt.Sprintf("  Ваш Ключ API:     %s\n\n\n", successStyle.Render(m.apiKey))
 		s += helpStyle.Render(" Нажмите ENTER для возврата ")
 
