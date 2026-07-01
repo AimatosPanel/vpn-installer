@@ -1,4 +1,3 @@
-cat << 'EOF' > /tmp/aimatos-source/vpn-installer/aimatos-cli/main.go
 package main
 
 import (
@@ -489,4 +488,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-EOF
