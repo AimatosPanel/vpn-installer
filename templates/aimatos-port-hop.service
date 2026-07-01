@@ -1,0 +1,11 @@
+[Unit]
+Description=Aimatos Panel Port Hopping Redirect Rules
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/iptables -t nat -A PREROUTING -p udp --dport 20000:20050 -j REDIRECT --to-ports 8444
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

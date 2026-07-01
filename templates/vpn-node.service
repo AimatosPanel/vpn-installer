@@ -1,0 +1,18 @@
+[Unit]
+Description=AimatosPanel VPN Node Agent
+After=network.target network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={{INSTALL_DIR}}/vpn-node
+ExecStart={{INSTALL_DIR}}/vpn-node/vpn-node
+Restart=always
+RestartSec=5
+Environment=MASTER_URL={{MASTER_URL}}
+Environment=API_KEY={{API_KEY}}
+Environment=NODE_PORT={{NODE_PORT}}
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
