@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 # Проверка прав суперпользователя (root)
 if [ "$EUID" -ne 0 ]; then
@@ -7,9 +6,10 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Инициализация тихого лог-файла
+# Инициализация тихого лог-файла и удаление старых временных бинарников
 LOG_FILE="/tmp/aimatos_install.log"
 echo "=== AIMATOS START: $(date) ===" > "$LOG_FILE"
+rm -f /tmp/aimatos-installer
 
 # Очистка экрана и вывод единственного лаконичного сообщения
 clear
@@ -61,6 +61,14 @@ run_silent go mod init aimatos-installer || true
 run_silent go mod tidy
 run_silent go build -o /tmp/aimatos-installer main.go
 
-# 6. Мгновенный переход к интерактивному интерфейсу установки
-clear
-/tmp/aimatos-installer
+# 6. Проверка успешности компиляции перед запуском
+if [ -f /tmp/aimatos-installer ]; then
+    chmod +x /tmp/aimatos-installer
+    clear
+    exec /tmp/aimatos-installer
+else
+    echo "❌ Критическая ошибка: Не удалось скомпилировать установщик."
+    echo "Пожалуйста, проверьте лог-файл сборки для выявления причин:"
+    echo "   cat $LOG_FILE"
+    exit 1
+fi
