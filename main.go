@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,166 +27,6 @@ const (
 	stateInstalling
 	stateFinished
 )
-
-// Встроенные шаблоны оптимизационных скриптов
-const script1 = `#!/bin/bash
-if [ "$EUID" -ne 0 ]; then echo "Запустите от имени root." ; exit 1; fi
-echo "-> Удаление cloud-init..."
-systemctl stop cloud-init cloud-init-local cloud-config cloud-final 2>/dev/null || true
-systemctl disable cloud-init cloud-init-local cloud-config cloud-final 2>/dev/null || true
-apt purge -y cloud-init || true
-rm -rf /etc/cloud/ /var/lib/cloud/
-echo "-> Удаление snapd..."
-systemctl stop snapd.service snapd.socket 2>/dev/null || true
-systemctl disable snapd.service snapd.socket 2>/dev/null || true
-apt purge -y snapd || true
-rm -rf /var/cache/snapd /var/snap /snap
-echo "-> Ограничение консолей TTY..."
-sed -i 's/#NAutoVTs=6/NAutoVTs=1/' /etc/systemd/logind.conf
-systemctl restart systemd-logind
-echo "-> Отключение неиспользуемых служб..."
-systemctl stop multipathd rpcbind unattended-upgrades lxd lxc-net 2>/dev/null || true
-systemctl disable multipathd rpcbind unattended-upgrades lxd lxc-net 2>/dev/null || true
-apt purge -y multipath-tools rpcbind unattended-upgrades || true
-echo "-> Очистка APT..."
-apt autoremove --purge -y && apt clean
-echo "-> Переход на nftables..."
-systemctl stop ufw firewalld 2>/dev/null || true
-systemctl disable ufw firewalld 2>/dev/null || true
-apt purge -y ufw firewalld || true
-apt install -y nftables && systemctl enable nftables
-cat << 'EOF' > /etc/nftables.conf
-#!/usr/sbin/nft -f
-flush ruleset
-table inet filter {
-    chain input { type filter hook input priority filter; policy accept; }
-    chain forward { type filter hook forward priority filter; policy accept; }
-    chain output { type filter hook output priority filter; policy accept; }
-}
-EOF
-systemctl restart nftables`
-
-const script2 = `#!/bin/bash
-if [ "$EUID" -ne 0 ]; then echo "Запустите от имени root." ; exit 1; fi
-apt update && apt install -y ethtool
-echo "-> Оптимизация Ring Buffer..."
-for iface in $(ls /sys/class/net); do
-    if [[ "$iface" != "lo" && "$iface" != wg* && "$iface" != tun* ]]; then
-        ethtool -G "$iface" rx 2048 tx 2048 2>/dev/null || ethtool -G "$iface" rx 1024 tx 1024 2>/dev/null || true
-    fi
-done
-cat << 'EOF' > /etc/udev/rules.d/98-ring-buffers.rules
-ACTION=="add|change", SUBSYSTEM=="net", KERNEL=="eth*|ens*|enp*|en*", RUN+="/usr/sbin/ethtool -G %k rx 2048 tx 2048"
-EOF
-echo "-> Тюнинг sysctl..."
-SYSCTL_CONF="/etc/sysctl.conf"
-cp "$SYSCTL_CONF" "${SYSCTL_CONF}.bak"
-sed -i '/# VPN Advanced/,$d' "$SYSCTL_CONF"
-cat << 'EOF' >> "$SYSCTL_CONF"
-
-# VPN Advanced Start
-net.ipv4.ip_forward = 1
-net.ipv6.conf.all.forwarding = 1
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-net.core.netdev_max_backlog = 100000
-net.unix.max_dgram_qlen = 512
-net.core.rmem_max = 33554432
-net.core.wmem_max = 33554432
-net.core.rmem_default = 16777216
-net.core.wmem_default = 16777216
-net.ipv4.tcp_rmem = 4096 87380 33554432
-net.ipv4.tcp_wmem = 4096 65536 33554432
-net.ipv4.udp_rmem_min = 16384
-net.ipv4.udp_wmem_min = 16384
-net.netfilter.nf_conntrack_max = 1048576
-net.netfilter.nf_conntrack_tcp_timeout_established = 600
-net.ipv4.tcp_slow_start_after_idle = 0
-# VPN Advanced End
-EOF
-sysctl -p`
-
-const script3 = `#!/bin/bash
-if [ "$EUID" -ne 0 ]; then echo "Запустите от имени root." ; exit 1; fi
-echo "-> Настройка noatime в /etc/fstab..."
-mount -o remount,noatime / 2>/dev/null || true
-sed -i '/\s\/\s/ s/defaults/defaults,noatime/g' /etc/fstab 2>/dev/null || true
-sed -i '/\s\/\s/ s/relatime/noatime/g' /etc/fstab 2>/dev/null || true
-echo "-> Поиск и отключение дискового Swap..."
-if [ -f /swapfile ]; then
-  swapoff /swapfile || true
-  sed -i '/\/swapfile/d' /etc/fstab
-  rm -f /swapfile
-fi
-echo "-> Настройка ZRAM..."
-apt update && apt install -y zram-tools
-ZRAM_DEFAULT="/etc/default/zram-tools"
-cp "$ZRAM_DEFAULT" "${ZRAM_DEFAULT}.bak"
-cat << 'EOF' > "$ZRAM_DEFAULT"
-CORES=$(nproc)
-ALGO=zstd
-PERCENT=50
-PRIORITY=100
-EOF
-SYSCTL_CONF="/etc/sysctl.conf"
-sed -i '/vm.swappiness/d' "$SYSCTL_CONF"
-sed -i '/vm.vfs_cache_pressure/d' "$SYSCTL_CONF"
-cat << 'EOF' >> "$SYSCTL_CONF"
-vm.swappiness = 15
-vm.vfs_cache_pressure = 50
-EOF
-sysctl -p
-systemctl restart zram-tools.service`
-
-const script4 = `#!/bin/bash
-if [ "$EUID" -ne 0 ]; then echo "Запустите от имени root." ; exit 1; fi
-echo "-> Настройка CPU Governor..."
-apt update && apt install -y cpufrequtils
-for cpu_gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-    if [ -f "$cpu_gov" ]; then
-        echo "performance" > "$cpu_gov" || true
-    fi
-done
-echo 'GOVERNOR="performance"' > /etc/default/cpufrequtils
-systemctl restart cpufrequtils 2>/dev/null || true
-echo "-> Установка и запуск irqbalance..."
-apt install -y irqbalance
-systemctl enable irqbalance && systemctl restart irqbalance
-echo "-> Настройка лимитов открытых файлов..."
-LIMITS_CONF="/etc/security/limits.conf"
-cp "$LIMITS_CONF" "${LIMITS_CONF}.bak"
-sed -i '/# VPN Limits/,$d' "$LIMITS_CONF"
-cat << 'EOF' >> "$LIMITS_CONF"
-# VPN Limits Start
-* soft nofile 1048576
-* hard nofile 1048576
-root soft nofile 1048576
-root hard nofile 1048576
-# VPN Limits End
-EOF
-echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/system.conf
-echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/user.conf
-systemctl daemon-reexec
-echo "-> Тюнинг I/O планировщика..."
-cat << 'EOF' > /etc/udev/rules.d/60-scheduler.rules
-ACTION=="add|change", KERNEL=="sd[a-z]|vd[a-z]", ATTR{queue/scheduler}="none"
-EOF`
-
-const script5 = `#!/bin/bash
-if [ "$EUID" -ne 0 ]; then echo "Запустите от имени root." ; exit 1; fi
-echo "-> Настройка Chrony..."
-systemctl stop systemd-timesyncd 2>/dev/null || true
-systemctl disable systemd-timesyncd 2>/dev/null || true
-apt update && apt install -y chrony
-systemctl enable chrony && systemctl restart chrony
-echo "-> Оптимизация SSH шифров..."
-SSH_CONF="/etc/ssh/sshd_config"
-cp "$SSH_CONF" "${SSH_CONF}.bak"
-sed -i '/^Ciphers/d' "$SSH_CONF"
-sed -i '/^MACs/d' "$SSH_CONF"
-echo "Ciphers chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,aes256-gcm@openssh.com" >> "$SSH_CONF"
-echo "MACs hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com" >> "$SSH_CONF"
-systemctl restart ssh`
 
 type installStep struct {
 	Name    string
@@ -214,6 +56,77 @@ type model struct {
 
 type stepResultMsg struct{ err error }
 
+// Функция поиска и загрузки шаблона (Локально -> Удаленно из репозитория GitHub)
+func getTemplate(filename string) (string, error) {
+	localPaths := []string{
+		filepath.Join("templates", filename),
+		filepath.Join("../templates", filename),
+		filepath.Join("vpn-installer/templates", filename),
+		filepath.Join("../vpn-installer/templates", filename),
+		filepath.Join("/tmp/aimatos-source/vpn-installer/templates", filename),
+	}
+
+	// 1. Попытка прочитать файл локально
+	for _, path := range localPaths {
+		if _, err := os.Stat(path); err == nil {
+			content, err := os.ReadFile(path)
+			if err == nil {
+				return string(content), nil
+			}
+		}
+	}
+
+	// 2. Фолбек: загрузка по сети из GitHub репозитория
+	url := "https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/templates/" + filename
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("сетевой сбой при получении %s: %v", filename, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("шаблон %s не найден на сервере (код %d)", filename, resp.StatusCode)
+	}
+
+	bytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(bytes), nil
+}
+
+// Загрузка шаблона и замена плейсхолдеров
+func loadTemplateAndResolve(filename string, replacements map[string]string) (string, error) {
+	content, err := getTemplate(filename)
+	if err != nil {
+		return "", err
+	}
+	for placeholder, value := range replacements {
+		content = strings.ReplaceAll(content, placeholder, value)
+	}
+	return content, nil
+}
+
+// Сборка команды для шага оптимизации с тройным каскадом поиска (Локально -> Относительно -> Сеть)
+func getOptSubCommand(filename string) string {
+	return fmt.Sprintf(
+		"( if [ -f /tmp/aimatos-source/vpn-installer/templates/%s ]; then "+
+			"cp /tmp/aimatos-source/vpn-installer/templates/%s /tmp/%s; "+
+		"elif [ -f ./templates/%s ]; then "+
+			"cp ./templates/%s /tmp/%s; "+
+		"else "+
+			"curl -sSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/templates/%s > /tmp/%s; "+
+		"fi && chmod +x /tmp/%s && bash /tmp/%s )",
+		filename, filename, filename,
+		filename, filename, filename,
+		filename, filename,
+		filename, filename,
+	)
+}
+
+// Функция считывания объема RAM из системы (в килобайтах)
 func getSystemRAM_KB() (uint64, error) {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
@@ -528,141 +441,104 @@ func (m *model) setupSimpleSteps() {
 		}
 	}
 
+	// === ШАГ 1: Подготовка хост-системы
+	var prepCmds []string
+	prepCmds = append(prepCmds, "mkdir -p /opt/aimatos/vpn-master /opt/aimatos/vpn-node /opt/aimatos/vpn-frontend /opt/aimatos/backups /opt/aimatos/aimatos-cli")
+	prepCmds = append(prepCmds, "systemctl stop vpn-master.service vpn-node.service aimatos-port-hop.service sing-box.service 2>/dev/null || true")
+	prepCmds = append(prepCmds, "killall vpn-master vpn-node sing-box 2>/dev/null || true")
+	prepCmds = append(prepCmds, "rm -f /opt/aimatos/vpn-master/vpn-master /opt/aimatos/vpn-node/vpn-node /opt/aimatos/vpn-node/sing-box /usr/local/bin/aimatos 2>/dev/null || true")
+	prepCmds = append(prepCmds, "systemctl stop unattended-upgrades 2>/dev/null || true; systemctl stop apt-daily.service 2>/dev/null || true; killall apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a")
+	
+	if needsSwap && !m.selectedOpts[2] {
+		prepCmds = append(prepCmds, "if [ ! -f /swapfile ]; then fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048; chmod 600 /swapfile; mkswap /swapfile && swapon /swapfile; echo '/swapfile none swap sw 0 0' >> /etc/fstab; fi")
+	}
+	prepCmds = append(prepCmds, "export DEBIAN_FRONTEND=noninteractive && apt-get update -y")
+	prepCmds = append(prepCmds, "export DEBIAN_FRONTEND=noninteractive && apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' libcurl4t64 curl git openssl sqlite3 build-essential ufw")
+
 	m.steps = []installStep{
-		{Name: "Инициализация каталогов (/opt/aimatos)", Command: "mkdir -p /opt/aimatos/vpn-master /opt/aimatos/vpn-node /opt/aimatos/vpn-frontend /opt/aimatos/backups /opt/aimatos/aimatos-cli"},
-		{Name: "Остановка активных служб панели (апгрейд)", Command: "systemctl stop vpn-master.service vpn-node.service aimatos-port-hop.service sing-box.service 2>/dev/null || true; killall vpn-master vpn-node sing-box 2>/dev/null || true; rm -f /opt/aimatos/vpn-master/vpn-master /opt/aimatos/vpn-node/vpn-node /opt/aimatos/vpn-node/sing-box /usr/local/bin/aimatos 2>/dev/null || true"},
-		{Name: "Снятие фоновых блокировок dpkg/apt", Command: "systemctl stop unattended-upgrades 2>/dev/null || true; systemctl stop apt-daily.service 2>/dev/null || true; killall apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a"},
+		{Name: "Подготовка хост-системы и зависимостей", Command: strings.Join(prepCmds, " && ")},
 	}
 
-	if needsSwap && !m.selectedOpts[2] { // Swap создается только если не выбран ZRAM (Скрипт 3)
-		m.steps = append(m.steps, installStep{
-			Name: "Настройка Swap-файла 2GB (" + swapComment + ")",
-			Command: "if [ ! -f /swapfile ]; then " +
-				"fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048; " +
-				"chmod 600 /swapfile; " +
-				"mkswap /swapfile && swapon /swapfile; " +
-				"echo '/swapfile none swap sw 0 0' >> /etc/fstab; " +
-				"fi",
-		})
-	}
+	// === ШАГ 2: Применение системных оптимизаций
+	var optCmds []string
+	if m.selectedOpts[0] { optCmds = append(optCmds, getOptSubCommand("1-clean-and-firewall.sh")) }
+	if m.selectedOpts[1] { optCmds = append(optCmds, getOptSubCommand("2-network-and-buffers.sh")) }
+	if m.selectedOpts[2] { optCmds = append(optCmds, getOptSubCommand("3-memory-and-storage.sh")) }
+	if m.selectedOpts[3] { optCmds = append(optCmds, getOptSubCommand("4-cpu-and-limits.sh")) }
+	if m.selectedOpts[4] { optCmds = append(optCmds, getOptSubCommand("5-system-services.sh")) }
 
-	m.steps = append(m.steps, []installStep{
-		{Name: "Синхронизация пакетной базы APT", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get update -y"},
-		{Name: "Развертывание базовых пакетов окружения", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' libcurl4t64 curl git openssl sqlite3 build-essential ufw"},
-	}...)
+	compoundOptCmd := "echo 'Оптимизации ядра пропущены'"
+	if len(optCmds) > 0 {
+		compoundOptCmd = strings.Join(optCmds, " && ")
+	}
+	m.steps = append(m.steps, installStep{Name: "Применение системных оптимизаций ядра", Command: compoundOptCmd})
 
-	// Выборочное добавление шагов оптимизации
-	if m.selectedOpts[0] {
-		m.steps = append(m.steps, installStep{
-			Name:    "Оптимизация: Скрипт 1 (Очистка и Nftables)",
-			Command: fmt.Sprintf("cat << 'EOF' > /tmp/1-clean.sh\n%s\nEOF\nbash /tmp/1-clean.sh", script1),
-		})
-	}
-	if m.selectedOpts[1] {
-		m.steps = append(m.steps, installStep{
-			Name:    "Оптимизация: Скрипт 2 (Сеть, Ring Buffer, BBR)",
-			Command: fmt.Sprintf("cat << 'EOF' > /tmp/2-network.sh\n%s\nEOF\nbash /tmp/2-network.sh", script2),
-		})
-	}
-	if m.selectedOpts[2] {
-		m.steps = append(m.steps, installStep{
-			Name:    "Оптимизация: Скрипт 3 (ZRAM, Disk Swap Off, noatime)",
-			Command: fmt.Sprintf("cat << 'EOF' > /tmp/3-memory.sh\n%s\nEOF\nbash /tmp/3-memory.sh", script3),
-		})
-	}
-	if m.selectedOpts[3] {
-		m.steps = append(m.steps, installStep{
-			Name:    "Оптимизация: Скрипт 4 (CPU governor, limits)",
-			Command: fmt.Sprintf("cat << 'EOF' > /tmp/4-cpu.sh\n%s\nEOF\nbash /tmp/4-cpu.sh", script4),
-		})
-	}
-	if m.selectedOpts[4] {
-		m.steps = append(m.steps, installStep{
-			Name:    "Оптимизация: Скрипт 5 (Chrony, SSH ciphers)",
-			Command: fmt.Sprintf("cat << 'EOF' > /tmp/5-services.sh\n%s\nEOF\nbash /tmp/5-services.sh", script5),
-		})
-	}
+	// === ШАГ 3: Развертывание компиляторов
+	compilersCmd := "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && " +
+		"export DEBIAN_FRONTEND=noninteractive && apt-get install -y nodejs && " +
+		"wget -q https://golang.org/dl/go1.22.2.linux-amd64.tar.gz -O /tmp/go.tar.gz && " +
+		"rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && rm /tmp/go.tar.gz && " +
+		"ln -sf /usr/local/go/bin/go /usr/bin/go"
+	m.steps = append(m.steps, installStep{Name: "Развертывание компиляторов Go и Node.js", Command: compilersCmd})
 
-	// Основные шаги компиляции и регистрации
-	m.steps = append(m.steps, []installStep{
-		{Name: "Настройка репозитория Node.js (V20 LTS)", Command: "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -"},
-		{Name: "Установка платформы Node.js & NPM", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get install -y nodejs"},
-		{Name: "Загрузка Go-lang компилятора (v1.22)", Command: "wget -q https://golang.org/dl/go1.22.2.linux-amd64.tar.gz -O /tmp/go.tar.gz"},
-		{Name: "Развертывание Go-компилятора", Command: "rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && rm /tmp/go.tar.gz && ln -sf /usr/local/go/bin/go /usr/bin/go"},
-		{Name: "Экспорт файлов исходного кода", Command: fmt.Sprintf("cp -r %s/. /opt/aimatos/vpn-master/ && cp -r %s/. /opt/aimatos/vpn-node/ && cp -r %s/. /opt/aimatos/vpn-frontend/ && cp -r %s/. /opt/aimatos/aimatos-cli/", masterPath, nodePath, frontendPath, cliPath)},
-		{Name: "Создание индексной страницы index.html", Command: `cat << 'EOF' > /opt/aimatos/vpn-frontend/index.html
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AimatosPanel</title>
-  </head>
-  <body class="bg-[#141218] text-[#E6E1E5]">
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
-</html>
-EOF`},
-		{Name: "Сборка веб-интерфейса (React Vite)", Command: "cd /opt/aimatos/vpn-frontend && npm install && npm run build && rm -rf /opt/aimatos/vpn-master/dist && cp -r /opt/aimatos/vpn-frontend/dist /opt/aimatos/vpn-master/dist"},
-		{Name: "Компиляция ядра Master-сервера (Go)", Command: "cd /opt/aimatos/vpn-master && go mod tidy && go build -o vpn-master ."},
-		{Name: "Компиляция прокси-модуля Node (Go)", Command: "cd /opt/aimatos/vpn-node && go mod tidy && go build -o vpn-node ."},
-		{Name: "Компиляция утилиты управления CLI", Command: "cd /opt/aimatos/aimatos-cli && go mod init aimatos-cli 2>/dev/null || true && go get github.com/charmbracelet/bubbletea github.com/charmbracelet/bubbles github.com/charmbracelet/lipgloss modernc.org/sqlite && go mod tidy && go build -o /usr/local/bin/aimatos ."},
-		{Name: "Интеграция сетевого ядра Sing-Box", Command: "cd /opt/aimatos/vpn-node && curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.8.5/sing-box-1.8.5-linux-amd64.tar.gz && tar -xzf sing-box.tar.gz --strip-components=1 && rm sing-box.tar.gz && chmod +x sing-box"},
-		{Name: "Генерация сертификатов SSL", Command: "openssl req -x509 -newkey rsa:2048 -keyout /opt/aimatos/vpn-node/server.key -out /opt/aimatos/vpn-node/server.crt -sha256 -days 3650 -nodes -subj '/CN=your-server'"},
-		{Name: "Регистрация системных служб Systemd", Command: fmt.Sprintf(`
+	// === ШАГ 4: Импорт исходного кода и сборка веб-панели
+	indexHTMLCmd := "if [ -f /tmp/aimatos-source/vpn-installer/templates/index.html ]; then " +
+		"cp /tmp/aimatos-source/vpn-installer/templates/index.html /opt/aimatos/vpn-frontend/index.html; " +
+		"elif [ -f ./templates/index.html ]; then " +
+		"cp ./templates/index.html /opt/aimatos/vpn-frontend/index.html; " +
+		"else " +
+		"curl -sSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/templates/index.html > /opt/aimatos/vpn-frontend/index.html; " +
+		"fi"
+
+	frontendBuildCmd := fmt.Sprintf(
+		"cp -r %s/. /opt/aimatos/vpn-master/ && cp -r %s/. /opt/aimatos/vpn-node/ && cp -r %s/. /opt/aimatos/vpn-frontend/ && cp -r %s/. /opt/aimatos/aimatos-cli/ && "+
+			"%s && "+
+			"cd /opt/aimatos/vpn-frontend && npm install && npm run build && rm -rf /opt/aimatos/vpn-master/dist && cp -r /opt/aimatos/vpn-frontend/dist /opt/aimatos/vpn-master/dist",
+		masterPath, nodePath, frontendPath, cliPath, indexHTMLCmd,
+	)
+	m.steps = append(m.steps, installStep{Name: "Экспорт исходного кода и сборка React-интерфейса", Command: frontendBuildCmd})
+
+	// === ШАГ 5: Компиляция Go-модулей
+	compileGoCmd := "cd /opt/aimatos/vpn-master && go mod tidy && go build -o vpn-master . && " +
+		"cd /opt/aimatos/vpn-node && go mod tidy && go build -o vpn-node . && " +
+		"cd /opt/aimatos/aimatos-cli && go mod init aimatos-cli 2>/dev/null || true && go get github.com/charmbracelet/bubbletea github.com/charmbracelet/bubbles github.com/charmbracelet/lipgloss modernc.org/sqlite && go mod tidy && go build -o /usr/local/bin/aimatos ."
+	m.steps = append(m.steps, installStep{Name: "Компиляция исполняемых файлов (Master, Node, CLI)", Command: compileGoCmd})
+
+	// === ШАГ 6: Интеграция Sing-Box и SSL
+	singboxCmd := "cd /opt/aimatos/vpn-node && curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.8.5/sing-box-1.8.5-linux-amd64.tar.gz && tar -xzf sing-box.tar.gz --strip-components=1 && rm sing-box.tar.gz && chmod +x sing-box && " +
+		"openssl req -x509 -newkey rsa:2048 -keyout /opt/aimatos/vpn-node/server.key -out /opt/aimatos/vpn-node/server.crt -sha256 -days 3650 -nodes -subj '/CN=your-server'"
+	m.steps = append(m.steps, installStep{Name: "Интеграция сетевого ядра Sing-Box и SSL", Command: singboxCmd})
+
+	// === ШАГ 7: Регистрация системных служб и брандмауэра
+	masterService, errM := loadTemplateAndResolve("vpn-master.service", map[string]string{
+		"{{INSTALL_DIR}}": "/opt/aimatos",
+		"{{PORT}}":        "8080",
+	})
+	nodeService, errN := loadTemplateAndResolve("vpn-node.service", map[string]string{
+		"{{INSTALL_DIR}}": "/opt/aimatos",
+		"{{MASTER_URL}}":  "http://127.0.0.1:8080",
+		"{{API_KEY}}":     m.apiKey,
+		"{{NODE_PORT}}":   "8085",
+	})
+	portHopService, errH := loadTemplateAndResolve("aimatos-port-hop.service", map[string]string{
+		"{{INSTALL_DIR}}": "/opt/aimatos",
+	})
+
+	if errM != nil { m.err = fmt.Errorf("сбой загрузки vpn-master.service: %v", errM); return }
+	if errN != nil { m.err = fmt.Errorf("сбой загрузки vpn-node.service: %v", errN); return }
+	if errH != nil { m.err = fmt.Errorf("сбой загрузки aimatos-port-hop.service: %v", errH); return }
+
+	registerServicesCmd := fmt.Sprintf(`
                 cat << 'EOF' > /etc/systemd/system/vpn-master.service
-[Unit]
-Description=AimatosPanel VPN Master Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/aimatos/vpn-master
-ExecStart=/opt/aimatos/vpn-master/vpn-master
-Restart=always
-RestartSec=5
-Environment=PORT=8080
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
+%s
 EOF
 
                 cat << 'EOF' > /etc/systemd/system/vpn-node.service
-[Unit]
-Description=AimatosPanel VPN Node Agent
-After=network.target network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/aimatos/vpn-node
-ExecStart=/opt/aimatos/vpn-node/vpn-node
-Restart=always
-RestartSec=5
-Environment=MASTER_URL=http://127.0.0.1:8080
-Environment=API_KEY=%s
-Environment=NODE_PORT=8085
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
+%s
 EOF
 
                 cat << 'EOF' > /etc/systemd/system/aimatos-port-hop.service
-[Unit]
-Description=Aimatos Panel Port Hopping Redirect Rules
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/sbin/iptables -t nat -A PREROUTING -p udp --dport 20000:20050 -j REDIRECT --to-ports 8444
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
+%s
 EOF
 
                 systemctl daemon-reload &&
@@ -670,11 +546,17 @@ EOF
                 systemctl restart vpn-master.service &&
                 sleep 2 &&
                 sqlite3 /opt/aimatos/vpn-master/panel.db "UPDATE settings SET value = '%s' WHERE key = 'api_key';" &&
-                systemctl restart vpn-node.service aimatos-port-hop.service
-            `, m.apiKey, m.apiKey)},
-		{Name: "Настройка UFW брандмауэра", Command: "ufw allow 22/tcp && ufw allow 8080/tcp && ufw allow 8085/tcp && ufw allow 8443/tcp && ufw allow 8447/tcp && ufw allow 8444/tcp && ufw allow 8444/udp && ufw allow 8445/udp && ufw allow 8446/tcp && ufw allow 20000:20050/udp && echo 'y' | ufw enable"},
-		{Name: "Очистка сборочного окружения и мусора", Command: "rm -rf /opt/aimatos/vpn-frontend /opt/aimatos/aimatos-cli /tmp/aimatos-source && apt-get purge -y nodejs && rm -f /etc/apt/sources.list.d/nodesource.list && rm -rf /usr/local/go /usr/bin/go && apt-get autoremove -y && apt-get clean"},
-	}...)
+                systemctl restart vpn-node.service aimatos-port-hop.service &&
+                ufw allow 22/tcp && ufw allow 8080/tcp && ufw allow 8085/tcp && ufw allow 8443/tcp && ufw allow 8447/tcp && ufw allow 8444/tcp && ufw allow 8444/udp && ufw allow 8445/udp && ufw allow 8446/tcp && ufw allow 20000:20050/udp && echo 'y' | ufw enable
+            `, masterService, nodeService, portHopService, m.apiKey)
+	m.steps = append(m.steps, installStep{Name: "Регистрация системных служб Systemd и UFW", Command: registerServicesCmd})
+
+	// === ШАГ 8: Очистка диска от зависимостей разработки
+	cleanupCmd := "rm -rf /opt/aimatos/vpn-frontend /opt/aimatos/aimatos-cli /tmp/aimatos-source && " +
+		"apt-get purge -y nodejs && rm -f /etc/apt/sources.list.d/nodesource.list && " +
+		"rm -rf /usr/local/go /usr/bin/go && " +
+		"apt-get autoremove -y && apt-get clean"
+	m.steps = append(m.steps, installStep{Name: "Очистка сборочного окружения и мусора", Command: cleanupCmd})
 
 	m.steps[0].Status = "running"
 }
