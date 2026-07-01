@@ -1,3 +1,4 @@
+cat << 'EOF' > /tmp/aimatos-source/vpn-installer/aimatos-cli/main.go
 package main
 
 import (
@@ -6,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -33,6 +35,7 @@ var (
 const DB_PATH = "/opt/aimatos/vpn-master/panel.db"
 
 type menuState int
+
 const (
 	stateMain menuState = iota
 	stateStatus
@@ -57,6 +60,9 @@ type model struct {
 	termWidth   int
 	termHeight  int
 	outputMsg   string
+	apiKey      string
+	statusStr   string
+	usersStr    string
 }
 
 func initialModel() model {
@@ -73,12 +79,12 @@ func initialModel() model {
 	inputs[0].Width = 20
 
 	inputs[1] = textinput.New()
-	inputs[1].Placeholder = "Лимит трафика GB (0 - безлимит)"
+	inputs[1].Placeholder = "Лимит ГБ (0 - безлимит)"
 	inputs[1].CharLimit = 5
 	inputs[1].Width = 10
 
 	inputs[2] = textinput.New()
-	inputs[2].Placeholder = "Срок действия в днях (0 - бессрочно)"
+	inputs[2].Placeholder = "Срок в днях (0 - бессрочно)"
 	inputs[2].CharLimit = 5
 	inputs[2].Width = 10
 
@@ -87,12 +93,12 @@ func initialModel() model {
 	s.Style = lipgloss.NewStyle().Foreground(accentColor)
 
 	return model{
-		state:       stateMain,
-		mainChoice:  0,
-		inputs:      inputs,
-		spinner:     s,
-		db:          db,
-		outputMsg:   "",
+		state:      stateMain,
+		mainChoice: 0,
+		inputs:     inputs,
+		spinner:    s,
+		db:         db,
+		outputMsg:  "",
 	}
 }
 
@@ -123,9 +129,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stateMain:
 			switch msg.String() {
 			case "up", "k":
-				if m.mainChoice > 0 { m.mainChoice-- }
+				if m.mainChoice > 0 {
+					m.mainChoice--
+				}
 			case "down", "j":
-				if m.mainChoice < 6 { m.mainChoice++ }
+				if m.mainChoice < 6 {
+					m.mainChoice++
+				}
 			case "enter":
 				m.handleMainMenuSelection()
 			}
@@ -133,9 +143,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stateUsersMenu:
 			switch msg.String() {
 			case "up", "k":
-				if m.userChoice > 0 { m.userChoice-- }
+				if m.userChoice > 0 {
+					m.userChoice--
+				}
 			case "down", "j":
-				if m.userChoice < 5 { m.userChoice++ }
+				if m.userChoice < 5 {
+					m.userChoice++
+				}
 			case "enter":
 				m.handleUsersMenuSelection()
 			}
@@ -144,13 +158,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "tab", "shift+tab":
 				m.inputs[m.activeInput].Blur()
-				if m.activeInput == 0 {
-					m.activeInput = 1
-				} else if m.activeInput == 1 {
-					m.activeInput = 2
-				} else {
-					m.activeInput = 0
-				}
+				m.activeInput = (m.activeInput + 1) % 3
 				m.inputs[m.activeInput].Focus()
 			case "enter":
 				m.createNewUser()
@@ -163,9 +171,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case statePortsMenu:
 			switch msg.String() {
 			case "up", "k":
-				if m.portsChoice > 0 { m.portsChoice-- }
+				if m.portsChoice > 0 {
+					m.portsChoice--
+				}
 			case "down", "j":
-				if m.portsChoice < 4 { m.portsChoice++ }
+				if m.portsChoice < 4 {
+					m.portsChoice++
+				}
 			case "enter":
 				m.handlePortsSelection()
 			}
@@ -173,9 +185,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stateToolsMenu:
 			switch msg.String() {
 			case "up", "k":
-				if m.toolsChoice > 0 { m.toolsChoice-- }
+				if m.toolsChoice > 0 {
+					m.toolsChoice--
+				}
 			case "down", "j":
-				if m.toolsChoice < 3 { m.toolsChoice++ }
+				if m.toolsChoice < 3 {
+					m.toolsChoice++
+				}
 			case "enter":
 				m.handleToolsSelection()
 			}
@@ -197,8 +213,13 @@ func (m *model) handleMainMenuSelection() {
 	switch m.mainChoice {
 	case 0:
 		m.state = stateStatus
+		m.statusStr = getSysStats()
 	case 1:
 		m.state = stateLinks
+		_ = m.db.QueryRow("SELECT value FROM settings WHERE key = 'api_key'").Scan(&m.apiKey)
+		if m.apiKey == "" {
+			m.apiKey = "ОШИБКА: Ключ не найден в БД"
+		}
 	case 2:
 		m.state = stateUsersMenu
 		m.userChoice = 0
@@ -210,7 +231,7 @@ func (m *model) handleMainMenuSelection() {
 		cmd := exec.Command("clear")
 		cmd.Stdout = os.Stdout
 		_ = cmd.Run()
-		
+
 		journal := exec.Command("journalctl", "-u", "vpn-master.service", "-n", "50", "-f")
 		journal.Stdin = os.Stdin
 		journal.Stdout = os.Stdout
@@ -229,23 +250,66 @@ func (m *model) handleMainMenuSelection() {
 	}
 }
 
+func getSysStats() string {
+	up, _ := exec.Command("uptime", "-p").Output()
+	mem, _ := exec.Command("bash", "-c", "free -h | awk '/^Mem:/ {print $3 \" / \" $2}'").Output()
+	cpu, _ := exec.Command("bash", "-c", "top -bn1 | grep 'Cpu(s)' | awk '{print $2 + $4}'").Output()
+	return fmt.Sprintf("  Время работы: %s\n  Использовано ОЗУ: %s\n  Загрузка CPU: %s%%", 
+		strings.TrimSpace(string(up)), 
+		strings.TrimSpace(string(mem)), 
+		strings.TrimSpace(string(cpu)))
+}
+
+func fetchUsers(db *sql.DB) string {
+	rows, err := db.Query("SELECT name, is_active, traffic_limit_gb, traffic_used_bytes FROM users")
+	if err != nil {
+		return "  Ошибка запроса к БД"
+	}
+	defer rows.Close()
+	res := ""
+	count := 0
+	for rows.Next() {
+		var n string
+		var act int
+		var lim float64
+		var used int64
+		_ = rows.Scan(&n, &act, &lim, &used)
+		status := "🔴"
+		if act == 1 {
+			status = "🟢"
+		}
+		usedGB := float64(used) / 1073741824.0
+		limStr := "Безлимит"
+		if lim > 0 {
+			limStr = fmt.Sprintf("%.2f GB", lim)
+		}
+		res += fmt.Sprintf("  %s %s | Израсходовано: %.2f GB / %s\n", status, n, usedGB, limStr)
+		count++
+	}
+	if count == 0 {
+		return "  База клиентов пуста."
+	}
+	return res
+}
+
 func (m *model) handleUsersMenuSelection() {
 	switch m.userChoice {
 	case 0:
 		m.state = stateUserList
+		m.usersStr = fetchUsers(m.db)
 	case 1:
 		m.state = stateUserAdd
 		m.inputs[0].Focus()
 		m.activeInput = 0
 	case 2:
 		m.state = stateMain
-		m.outputMsg = "Функция доступна в веб-интерфейсе"
+		m.outputMsg = "Переключение профилей доступно в веб-интерфейсе."
 	case 3:
 		m.state = stateMain
-		m.outputMsg = "Статистика сброшена."
+		m.outputMsg = "Сброс статистики доступен в веб-интерфейсе."
 	case 4:
 		m.state = stateMain
-		m.outputMsg = "Для удаления используйте веб-панель."
+		m.outputMsg = "Удаление доступно в веб-интерфейсе."
 	case 5:
 		m.state = stateMain
 	}
@@ -253,7 +317,7 @@ func (m *model) handleUsersMenuSelection() {
 
 func (m *model) handlePortsSelection() {
 	m.state = stateMain
-	m.outputMsg = "Порты изменены. Службы перезапущены."
+	m.outputMsg = "Смена портов интегрирована в Веб-интерфейс (Конфиг)"
 }
 
 func (m *model) handleToolsSelection() {
@@ -264,15 +328,15 @@ func (m *model) handleToolsSelection() {
 		filename := filepath.Join(backupDir, fmt.Sprintf("backup_%d.db", time.Now().Unix()))
 		_, err := m.db.Exec(fmt.Sprintf("VACUUM INTO '%s';", filename))
 		if err == nil {
-			m.outputMsg = "Резервная копия создана!"
+			m.outputMsg = "Резервная копия БД создана!"
 		} else {
-			m.outputMsg = "Ошибка создания копии."
+			m.outputMsg = "Ошибка создания копии БД."
 		}
 	case 1:
-		m.outputMsg = "Восстановление возможно из папки /opt/aimatos/backups/"
+		m.outputMsg = "Восстановление файлов БД вручную из /opt/aimatos/backups/"
 	case 2:
 		_ = exec.Command("bash", "-c", "echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf && echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf && sysctl -p").Run()
-		m.outputMsg = "Алгоритм TCP BBR успешно активирован!"
+		m.outputMsg = "Алгоритм оптимизации TCP BBR успешно активирован!"
 	case 3:
 		m.state = stateMain
 	}
@@ -285,7 +349,7 @@ func (m *model) createNewUser() {
 	name := m.inputs[0].Value()
 	if name == "" {
 		m.state = stateMain
-		m.outputMsg = "Ошибка: Имя пустое."
+		m.outputMsg = "Ошибка: Имя не может быть пустым."
 		return
 	}
 
@@ -294,9 +358,9 @@ func (m *model) createNewUser() {
 
 	_, err := m.db.Exec("INSERT INTO users (name, vless_uuid, hysteria2_password, traffic_limit_gb, allowed_protocols) VALUES (?, ?, ?, 0, 'vless,hysteria2,tuic,naive');", name, uuidStr, passStr)
 	if err == nil {
-		m.outputMsg = fmt.Sprintf("Пользователь %s успешно добавлен!", name)
+		m.outputMsg = fmt.Sprintf("Пользователь '%s' успешно создан!", name)
 	} else {
-		m.outputMsg = "Ошибка записи: имя занято."
+		m.outputMsg = "Ошибка записи: Пользователь уже существует."
 	}
 	m.state = stateMain
 }
@@ -308,9 +372,9 @@ func (m model) renderContent() string {
 	case stateMain:
 		s += titleStyle.Render("🔮  AIMATOS PREMIUM TUI CONTROL  🔮") + "\n"
 		s += subtitleStyle.Render("Высокоскоростная утилита администрирования системы") + "\n\n"
-		
+
 		if m.outputMsg != "" {
-			s += successStyle.Render("  [ ИНФО ]: "+m.outputMsg) + "\n\n"
+			s += successStyle.Render("  [ ИНФО ]: " + m.outputMsg) + "\n\n"
 		}
 
 		options := []string{
@@ -334,22 +398,20 @@ func (m model) renderContent() string {
 
 	case stateStatus:
 		s += titleStyle.Render("🛰️  Мониторинг ресурсов системы ") + "\n\n"
-		s += "  Время работы (Uptime):  активно\n"
-		s += "  Нагрузка процессора:   загрузка...\n"
-		s += "  Использование памяти:  загрузка...\n\n"
+		s += m.statusStr + "\n\n\n"
 		s += helpStyle.Render(" Нажмите ENTER для возврата ")
 
 	case stateLinks:
 		s += titleStyle.Render("🔗 Ссылки авторизации администратора ") + "\n\n"
-		s += "  Адрес входа: http://127.0.0.1:8080\n"
-		s += "  Секретный токен API загружается...\n\n"
+		s += "  Адрес веб-панели: http://<IP_СЕРВЕРА>:8080\n"
+		s += fmt.Sprintf("  Ваш Ключ API:     %s\n\n\n", successStyle.Render(m.apiKey))
 		s += helpStyle.Render(" Нажмите ENTER для возврата ")
 
 	case stateUsersMenu:
 		s += titleStyle.Render("👥 Управление базой клиентов ") + "\n\n"
 		options := []string{
-			"Показать список active профилей",
-			"Сгенерировать новые ключи",
+			"Показать список добавленных профилей",
+			"Сгенерировать новые ключи (Создать клиента)",
 			"Деактивировать / Активировать профиль",
 			"Сбросить использованный трафик на ноль",
 			"Полное удаление пользователя",
@@ -366,7 +428,7 @@ func (m model) renderContent() string {
 
 	case stateUserList:
 		s += titleStyle.Render("👥 Активные профили клиентов ") + "\n\n"
-		s += "  Загрузка данных из SQLite базы...\n\n"
+		s += m.usersStr + "\n\n"
 		s += helpStyle.Render(" Нажмите ENTER для возврата ")
 
 	case stateUserAdd:
@@ -427,3 +489,4 @@ func main() {
 		os.Exit(1)
 	}
 }
+EOF
