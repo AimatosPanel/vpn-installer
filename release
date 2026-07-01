@@ -63,7 +63,7 @@ printf "\r  [   ${GREEN}OK${NC}   ]  Cloning project repositories...\n"
 printf "  [  ${YELLOW}WAIT${NC}  ]  Compiling setup core..."
 cd /tmp/aimatos-source/vpn-installer
 go mod init aimatos-installer >> "$LOG_FILE" 2>&1 || true
-go get github.com/charmbracelet/bubbletea github.com/charmbracelet/bubbles github.com/charmbracelet/lipgloss >> "$LOG_FILE" 2>&1
+go mod tidy >> "$LOG_FILE" 2>&1
 go build -o /tmp/aimatos-installer main.go >> "$LOG_FILE" 2>&1
 printf "\r  [   ${GREEN}OK${NC}   ]  Compiling setup core...\n"
 
