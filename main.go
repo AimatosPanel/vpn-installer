@@ -66,7 +66,6 @@ func getTemplate(filename string) (string, error) {
 		filepath.Join("/tmp/aimatos-source/vpn-installer/templates", filename),
 	}
 
-	// 1. Попытка прочитать файл локально
 	for _, path := range localPaths {
 		if _, err := os.Stat(path); err == nil {
 			content, err := os.ReadFile(path)
@@ -76,7 +75,6 @@ func getTemplate(filename string) (string, error) {
 		}
 	}
 
-	// 2. Фолбек: загрузка по сети из GitHub репозитория
 	url := "https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/templates/" + filename
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(url)
@@ -97,7 +95,6 @@ func getTemplate(filename string) (string, error) {
 	return string(bytes), nil
 }
 
-// Загрузка шаблона и замена плейсхолдеров
 func loadTemplateAndResolve(filename string, replacements map[string]string) (string, error) {
 	content, err := getTemplate(filename)
 	if err != nil {
@@ -109,7 +106,6 @@ func loadTemplateAndResolve(filename string, replacements map[string]string) (st
 	return content, nil
 }
 
-// Сборка команды для шага оптимизации с тройным каскадом поиска (Локально -> Относительно -> Сеть)
 func getOptSubCommand(filename string) string {
 	return fmt.Sprintf(
 		"( if [ -f /tmp/aimatos-source/vpn-installer/templates/%s ]; then "+
@@ -126,7 +122,6 @@ func getOptSubCommand(filename string) string {
 	)
 }
 
-// Функция считывания объема RAM из системы (в килобайтах)
 func getSystemRAM_KB() (uint64, error) {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
@@ -526,6 +521,7 @@ func (m *model) setupSimpleSteps() {
 	if errN != nil { m.err = fmt.Errorf("сбой загрузки vpn-node.service: %v", errN); return }
 	if errH != nil { m.err = fmt.Errorf("сбой загрузки aimatos-port-hop.service: %v", errH); return }
 
+	// Добавлено условие if command -v ufw для избежания конфликта с nftables
 	registerServicesCmd := fmt.Sprintf(`
                 cat << 'EOF' > /etc/systemd/system/vpn-master.service
 %s
@@ -545,7 +541,7 @@ EOF
                 sleep 2 &&
                 sqlite3 /opt/aimatos/vpn-master/panel.db "UPDATE settings SET value = '%s' WHERE key = 'api_key';" &&
                 systemctl restart vpn-node.service aimatos-port-hop.service &&
-                ufw allow 22/tcp && ufw allow 8080/tcp && ufw allow 8085/tcp && ufw allow 8443/tcp && ufw allow 8447/tcp && ufw allow 8444/tcp && ufw allow 8444/udp && ufw allow 8445/udp && ufw allow 8446/tcp && ufw allow 20000:20050/udp && echo 'y' | ufw enable
+                if command -v ufw >/dev/null 2>&1; then ufw allow 22/tcp && ufw allow 8080/tcp && ufw allow 8085/tcp && ufw allow 8443/tcp && ufw allow 8447/tcp && ufw allow 8444/tcp && ufw allow 8444/udp && ufw allow 8445/udp && ufw allow 8446/tcp && ufw allow 20000:20050/udp && echo 'y' | ufw enable; fi
             `, masterService, nodeService, portHopService, m.apiKey)
 	m.steps = append(m.steps, installStep{Name: "Регистрация системных служб Systemd и UFW", Command: registerServicesCmd})
 
@@ -673,7 +669,7 @@ func (m model) renderContent() string {
 		s += " ──────────────────────────────────────────────────────────\n"
 		s += "  Для мгновенного открытия панели управления введите:\n"
 		s += "  " + focusStyle.Render(" Нажмите [ S ] на клавиатуре ") + "\n\n"
-		s += helpStyle.Render(" [ S ] Войти в исполняемую консоль  •  [ q ] Выйти ")
+		s += helpStyle.Render(" [ S ] Войти в панель  •  [ q ] Выйти ")
 	}
 
 	return s
