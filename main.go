@@ -19,11 +19,172 @@ type installState int
 const (
 	stateWelcome installState = iota
 	stateModeSelection
+	stateOptimizationSelection
 	stateComponentSelection
 	stateNodeInput
 	stateInstalling
 	stateFinished
 )
+
+// Встроенные шаблоны оптимизационных скриптов
+const script1 = `#!/bin/bash
+if [ "$EUID" -ne 0 ]; then echo "Запустите от имени root." ; exit 1; fi
+echo "-> Удаление cloud-init..."
+systemctl stop cloud-init cloud-init-local cloud-config cloud-final 2>/dev/null || true
+systemctl disable cloud-init cloud-init-local cloud-config cloud-final 2>/dev/null || true
+apt purge -y cloud-init || true
+rm -rf /etc/cloud/ /var/lib/cloud/
+echo "-> Удаление snapd..."
+systemctl stop snapd.service snapd.socket 2>/dev/null || true
+systemctl disable snapd.service snapd.socket 2>/dev/null || true
+apt purge -y snapd || true
+rm -rf /var/cache/snapd /var/snap /snap
+echo "-> Ограничение консолей TTY..."
+sed -i 's/#NAutoVTs=6/NAutoVTs=1/' /etc/systemd/logind.conf
+systemctl restart systemd-logind
+echo "-> Отключение неиспользуемых служб..."
+systemctl stop multipathd rpcbind unattended-upgrades lxd lxc-net 2>/dev/null || true
+systemctl disable multipathd rpcbind unattended-upgrades lxd lxc-net 2>/dev/null || true
+apt purge -y multipath-tools rpcbind unattended-upgrades || true
+echo "-> Очистка APT..."
+apt autoremove --purge -y && apt clean
+echo "-> Переход на nftables..."
+systemctl stop ufw firewalld 2>/dev/null || true
+systemctl disable ufw firewalld 2>/dev/null || true
+apt purge -y ufw firewalld || true
+apt install -y nftables && systemctl enable nftables
+cat << 'EOF' > /etc/nftables.conf
+#!/usr/sbin/nft -f
+flush ruleset
+table inet filter {
+    chain input { type filter hook input priority filter; policy accept; }
+    chain forward { type filter hook forward priority filter; policy accept; }
+    chain output { type filter hook output priority filter; policy accept; }
+}
+EOF
+systemctl restart nftables`
+
+const script2 = `#!/bin/bash
+if [ "$EUID" -ne 0 ]; then echo "Запустите от имени root." ; exit 1; fi
+apt update && apt install -y ethtool
+echo "-> Оптимизация Ring Buffer..."
+for iface in $(ls /sys/class/net); do
+    if [[ "$iface" != "lo" && "$iface" != wg* && "$iface" != tun* ]]; then
+        ethtool -G "$iface" rx 2048 tx 2048 2>/dev/null || ethtool -G "$iface" rx 1024 tx 1024 2>/dev/null || true
+    fi
+done
+cat << 'EOF' > /etc/udev/rules.d/98-ring-buffers.rules
+ACTION=="add|change", SUBSYSTEM=="net", KERNEL=="eth*|ens*|enp*|en*", RUN+="/usr/sbin/ethtool -G %k rx 2048 tx 2048"
+EOF
+echo "-> Тюнинг sysctl..."
+SYSCTL_CONF="/etc/sysctl.conf"
+cp "$SYSCTL_CONF" "${SYSCTL_CONF}.bak"
+sed -i '/# VPN Advanced/,$d' "$SYSCTL_CONF"
+cat << 'EOF' >> "$SYSCTL_CONF"
+
+# VPN Advanced Start
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.netdev_max_backlog = 100000
+net.unix.max_dgram_qlen = 512
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.core.rmem_default = 16777216
+net.core.wmem_default = 16777216
+net.ipv4.tcp_rmem = 4096 87380 33554432
+net.ipv4.tcp_wmem = 4096 65536 33554432
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+net.netfilter.nf_conntrack_max = 1048576
+net.netfilter.nf_conntrack_tcp_timeout_established = 600
+net.ipv4.tcp_slow_start_after_idle = 0
+# VPN Advanced End
+EOF
+sysctl -p`
+
+const script3 = `#!/bin/bash
+if [ "$EUID" -ne 0 ]; then echo "Запустите от имени root." ; exit 1; fi
+echo "-> Настройка noatime в /etc/fstab..."
+mount -o remount,noatime / 2>/dev/null || true
+sed -i '/\s\/\s/ s/defaults/defaults,noatime/g' /etc/fstab 2>/dev/null || true
+sed -i '/\s\/\s/ s/relatime/noatime/g' /etc/fstab 2>/dev/null || true
+echo "-> Поиск и отключение дискового Swap..."
+if [ -f /swapfile ]; then
+  swapoff /swapfile || true
+  sed -i '/\/swapfile/d' /etc/fstab
+  rm -f /swapfile
+fi
+echo "-> Настройка ZRAM..."
+apt update && apt install -y zram-tools
+ZRAM_DEFAULT="/etc/default/zram-tools"
+cp "$ZRAM_DEFAULT" "${ZRAM_DEFAULT}.bak"
+cat << 'EOF' > "$ZRAM_DEFAULT"
+CORES=$(nproc)
+ALGO=zstd
+PERCENT=50
+PRIORITY=100
+EOF
+SYSCTL_CONF="/etc/sysctl.conf"
+sed -i '/vm.swappiness/d' "$SYSCTL_CONF"
+sed -i '/vm.vfs_cache_pressure/d' "$SYSCTL_CONF"
+cat << 'EOF' >> "$SYSCTL_CONF"
+vm.swappiness = 15
+vm.vfs_cache_pressure = 50
+EOF
+sysctl -p
+systemctl restart zram-tools.service`
+
+const script4 = `#!/bin/bash
+if [ "$EUID" -ne 0 ]; then echo "Запустите от имени root." ; exit 1; fi
+echo "-> Настройка CPU Governor..."
+apt update && apt install -y cpufrequtils
+for cpu_gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    if [ -f "$cpu_gov" ]; then
+        echo "performance" > "$cpu_gov" || true
+    fi
+done
+echo 'GOVERNOR="performance"' > /etc/default/cpufrequtils
+systemctl restart cpufrequtils 2>/dev/null || true
+echo "-> Установка и запуск irqbalance..."
+apt install -y irqbalance
+systemctl enable irqbalance && systemctl restart irqbalance
+echo "-> Настройка лимитов открытых файлов..."
+LIMITS_CONF="/etc/security/limits.conf"
+cp "$LIMITS_CONF" "${LIMITS_CONF}.bak"
+sed -i '/# VPN Limits/,$d' "$LIMITS_CONF"
+cat << 'EOF' >> "$LIMITS_CONF"
+# VPN Limits Start
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+# VPN Limits End
+EOF
+echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/system.conf
+echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/user.conf
+systemctl daemon-reexec
+echo "-> Тюнинг I/O планировщика..."
+cat << 'EOF' > /etc/udev/rules.d/60-scheduler.rules
+ACTION=="add|change", KERNEL=="sd[a-z]|vd[a-z]", ATTR{queue/scheduler}="none"
+EOF`
+
+const script5 = `#!/bin/bash
+if [ "$EUID" -ne 0 ]; then echo "Запустите от имени root." ; exit 1; fi
+echo "-> Настройка Chrony..."
+systemctl stop systemd-timesyncd 2>/dev/null || true
+systemctl disable systemd-timesyncd 2>/dev/null || true
+apt update && apt install -y chrony
+systemctl enable chrony && systemctl restart chrony
+echo "-> Оптимизация SSH шифров..."
+SSH_CONF="/etc/ssh/sshd_config"
+cp "$SSH_CONF" "${SSH_CONF}.bak"
+sed -i '/^Ciphers/d' "$SSH_CONF"
+sed -i '/^MACs/d' "$SSH_CONF"
+echo "Ciphers chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,aes256-gcm@openssh.com" >> "$SSH_CONF"
+echo "MACs hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com" >> "$SSH_CONF"
+systemctl restart ssh`
 
 type installStep struct {
 	Name    string
@@ -47,11 +208,12 @@ type model struct {
 	termWidth     int
 	termHeight    int
 	launchCLI     bool
+	optList       []string
+	selectedOpts  map[int]bool
 }
 
 type stepResultMsg struct{ err error }
 
-// Функция считывания объема RAM из системы (в килобайтах)
 func getSystemRAM_KB() (uint64, error) {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
@@ -163,6 +325,15 @@ func initialModel() model {
 
 	uniqueKey := "aim_key_" + fmt.Sprintf("%d", time.Now().UnixNano())[:12]
 
+	optList := []string{
+		"Очистка мусора, Snapd, TTY и nftables (Скрипт 1)",
+		"Тюнинг сети, Ring Buffer, Unix-сокетов и BBR (Скрипт 2)",
+		"Включение ZRAM, отключение HDD Swap, noatime (Скрипт 3)",
+		"CPU Performance governor, irqbalance, ulimit (Скрипт 4)",
+		"Служба точного времени Chrony и SSH шифры (Скрипт 5)",
+	}
+	selectedOpts := map[int]bool{0: true, 1: true, 2: true, 3: true, 4: true}
+
 	return model{
 		state:         stateWelcome,
 		modeChoice:    0,
@@ -174,6 +345,8 @@ func initialModel() model {
 		apiKey:        uniqueKey,
 		cachedIP:      "127.0.0.1",
 		launchCLI:     false,
+		optList:       optList,
+		selectedOpts:  selectedOpts,
 	}
 }
 
@@ -215,12 +388,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "enter":
 				if m.modeChoice == 0 {
-					m.setupSimpleSteps()
-					m.state = stateInstalling
-					return m, runSystemCommand(m.steps[0].Command)
+					m.state = stateOptimizationSelection
+					m.activeInput = 0
 				} else {
 					m.state = stateComponentSelection
+					m.activeInput = 0
 				}
+			}
+
+		case stateOptimizationSelection:
+			switch msg.String() {
+			case "up", "k":
+				if m.activeInput > 0 {
+					m.activeInput--
+				}
+			case "down", "j":
+				if m.activeInput < len(m.optList)-1 {
+					m.activeInput++
+				}
+			case " ":
+				m.selectedOpts[m.activeInput] = !m.selectedOpts[m.activeInput]
+			case "enter":
+				m.setupSimpleSteps()
+				m.state = stateInstalling
+				m.currentStep = 0
+				return m, runSystemCommand(m.steps[0].Command)
 			}
 
 		case stateComponentSelection:
@@ -308,13 +500,11 @@ func (m *model) setupSimpleSteps() {
 	frontendPath := findFolderGlobally("vpn-frontend", "package.json")
 	cliPath := findFolderGlobally("aimatos-cli", "main.go")
 
-	// Резервные статические пути, если глобальный поиск не дал результатов
 	if masterPath == "" { masterPath = "/tmp/aimatos-source/vpn-master" }
 	if nodePath == "" { nodePath = "/tmp/aimatos-source/vpn-node" }
 	if frontendPath == "" { frontendPath = "/tmp/aimatos-source/vpn-frontend" }
 	if cliPath == "" { cliPath = "/tmp/aimatos-source/vpn-installer/aimatos-cli" }
 
-	// Дополнительная валидация существования папок на диске
 	if _, err := os.Stat(filepath.Join(masterPath, "main.go")); err != nil {
 		masterPath = "../vpn-master"
 	}
@@ -328,7 +518,6 @@ func (m *model) setupSimpleSteps() {
 		cliPath = "./aimatos-cli"
 	}
 
-	// Определение объема оперативной памяти
 	ramKB, err := getSystemRAM_KB()
 	needsSwap := false
 	var swapComment string
@@ -345,7 +534,7 @@ func (m *model) setupSimpleSteps() {
 		{Name: "Снятие фоновых блокировок dpkg/apt", Command: "systemctl stop unattended-upgrades 2>/dev/null || true; systemctl stop apt-daily.service 2>/dev/null || true; killall apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a"},
 	}
 
-	if needsSwap {
+	if needsSwap && !m.selectedOpts[2] { // Swap создается только если не выбран ZRAM (Скрипт 3)
 		m.steps = append(m.steps, installStep{
 			Name: "Настройка Swap-файла 2GB (" + swapComment + ")",
 			Command: "if [ ! -f /swapfile ]; then " +
@@ -360,6 +549,42 @@ func (m *model) setupSimpleSteps() {
 	m.steps = append(m.steps, []installStep{
 		{Name: "Синхронизация пакетной базы APT", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get update -y"},
 		{Name: "Развертывание базовых пакетов окружения", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' libcurl4t64 curl git openssl sqlite3 build-essential ufw"},
+	}...)
+
+	// Выборочное добавление шагов оптимизации
+	if m.selectedOpts[0] {
+		m.steps = append(m.steps, installStep{
+			Name:    "Оптимизация: Скрипт 1 (Очистка и Nftables)",
+			Command: fmt.Sprintf("cat << 'EOF' > /tmp/1-clean.sh\n%s\nEOF\nbash /tmp/1-clean.sh", script1),
+		})
+	}
+	if m.selectedOpts[1] {
+		m.steps = append(m.steps, installStep{
+			Name:    "Оптимизация: Скрипт 2 (Сеть, Ring Buffer, BBR)",
+			Command: fmt.Sprintf("cat << 'EOF' > /tmp/2-network.sh\n%s\nEOF\nbash /tmp/2-network.sh", script2),
+		})
+	}
+	if m.selectedOpts[2] {
+		m.steps = append(m.steps, installStep{
+			Name:    "Оптимизация: Скрипт 3 (ZRAM, Disk Swap Off, noatime)",
+			Command: fmt.Sprintf("cat << 'EOF' > /tmp/3-memory.sh\n%s\nEOF\nbash /tmp/3-memory.sh", script3),
+		})
+	}
+	if m.selectedOpts[3] {
+		m.steps = append(m.steps, installStep{
+			Name:    "Оптимизация: Скрипт 4 (CPU governor, limits)",
+			Command: fmt.Sprintf("cat << 'EOF' > /tmp/4-cpu.sh\n%s\nEOF\nbash /tmp/4-cpu.sh", script4),
+		})
+	}
+	if m.selectedOpts[4] {
+		m.steps = append(m.steps, installStep{
+			Name:    "Оптимизация: Скрипт 5 (Chrony, SSH ciphers)",
+			Command: fmt.Sprintf("cat << 'EOF' > /tmp/5-services.sh\n%s\nEOF\nbash /tmp/5-services.sh", script5),
+		})
+	}
+
+	// Основные шаги компиляции и регистрации
+	m.steps = append(m.steps, []installStep{
 		{Name: "Настройка репозитория Node.js (V20 LTS)", Command: "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -"},
 		{Name: "Установка платформы Node.js & NPM", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get install -y nodejs"},
 		{Name: "Загрузка Go-lang компилятора (v1.22)", Command: "wget -q https://golang.org/dl/go1.22.2.linux-amd64.tar.gz -O /tmp/go.tar.gz"},
@@ -448,7 +673,6 @@ EOF
                 systemctl restart vpn-node.service aimatos-port-hop.service
             `, m.apiKey, m.apiKey)},
 		{Name: "Настройка UFW брандмауэра", Command: "ufw allow 22/tcp && ufw allow 8080/tcp && ufw allow 8085/tcp && ufw allow 8443/tcp && ufw allow 8447/tcp && ufw allow 8444/tcp && ufw allow 8444/udp && ufw allow 8445/udp && ufw allow 8446/tcp && ufw allow 20000:20050/udp && echo 'y' | ufw enable"},
-		{Name: "Оптимизация сетевых параметров (BBR)", Command: "sysctl -w net.core.default_qdisc=fq && sysctl -w net.ipv4.tcp_congestion_control=bbr && (grep -q 'net.core.default_qdisc=fq' /etc/sysctl.conf || echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf) && (grep -q 'net.ipv4.tcp_congestion_control=bbr' /etc/sysctl.conf || echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf) && sysctl -p"},
 		{Name: "Очистка сборочного окружения и мусора", Command: "rm -rf /opt/aimatos/vpn-frontend /opt/aimatos/aimatos-cli /tmp/aimatos-source && apt-get purge -y nodejs && rm -f /etc/apt/sources.list.d/nodesource.list && rm -rf /usr/local/go /usr/bin/go && apt-get autoremove -y && apt-get clean"},
 	}...)
 
@@ -502,6 +726,22 @@ func (m model) renderContent() string {
 			}
 		}
 		s += "\n" + helpStyle.Render(" [↑/↓] Выбор пункта  •  [ ENTER ] Подтвердить ")
+
+	case stateOptimizationSelection:
+		s += titleStyle.Render("⚙️ Настройка оптимизаций системы ") + "\n"
+		s += subtitleStyle.Render("Выберите дополнительные модули тюнинга") + "\n\n"
+		for i, opt := range m.optList {
+			box := "[ ]"
+			if m.selectedOpts[i] {
+				box = focusStyle.Render("[✔]")
+			}
+			if i == m.activeInput {
+				s += fmt.Sprintf("   %s %s %s\n", focusStyle.Render("➔"), box, focusStyle.Render(opt))
+			} else {
+				s += fmt.Sprintf("      %s %s\n", box, opt)
+			}
+		}
+		s += "\n" + helpStyle.Render(" [Space] Переключить  •  [↑/↓] Навигация  •  [ ENTER ] Продолжить ")
 
 	case stateComponentSelection:
 		s += titleStyle.Render("🧩  Выборочные компоненты ") + "\n"
