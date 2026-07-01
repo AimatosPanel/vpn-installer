@@ -433,11 +433,9 @@ func (m *model) setupSimpleSteps() {
 
 	ramKB, err := getSystemRAM_KB()
 	needsSwap := false
-	var swapComment string
 	if err == nil {
 		if ramKB < 2048000 {
 			needsSwap = true
-			swapComment = fmt.Sprintf("RAM: %.2f GB", float64(ramKB)/1024.0/1024.0)
 		}
 	}
 
@@ -675,7 +673,7 @@ func (m model) renderContent() string {
 		s += " ──────────────────────────────────────────────────────────\n"
 		s += "  Для мгновенного открытия панели управления введите:\n"
 		s += "  " + focusStyle.Render(" Нажмите [ S ] на клавиатуре ") + "\n\n"
-		s += helpStyle.Render(" [ S ] Войти в панель  •  [ q ] Выйти ")
+		s += helpStyle.Render(" [ S ] Войти в исполняемую консоль  •  [ q ] Выйти ")
 	}
 
 	return s
