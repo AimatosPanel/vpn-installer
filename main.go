@@ -308,17 +308,31 @@ func (m *model) setupSimpleSteps() {
 	frontendPath := findFolderGlobally("vpn-frontend", "package.json")
 	cliPath := findFolderGlobally("aimatos-cli", "main.go")
 
-	if masterPath == "" { masterPath = "../vpn-master" }
-	if nodePath == "" { nodePath = "../vpn-node" }
-	if frontendPath == "" { frontendPath = "../vpn-frontend" }
-	if cliPath == "" { cliPath = "./aimatos-cli" }
+	// Резервные статические пути, если глобальный поиск не дал результатов
+	if masterPath == "" { masterPath = "/tmp/aimatos-source/vpn-master" }
+	if nodePath == "" { nodePath = "/tmp/aimatos-source/vpn-node" }
+	if frontendPath == "" { frontendPath = "/tmp/aimatos-source/vpn-frontend" }
+	if cliPath == "" { cliPath = "/tmp/aimatos-source/vpn-installer/aimatos-cli" }
+
+	// Дополнительная валидация существования папок на диске
+	if _, err := os.Stat(filepath.Join(masterPath, "main.go")); err != nil {
+		masterPath = "../vpn-master"
+	}
+	if _, err := os.Stat(filepath.Join(nodePath, "main.go")); err != nil {
+		nodePath = "../vpn-node"
+	}
+	if _, err := os.Stat(filepath.Join(frontendPath, "package.json")); err != nil {
+		frontendPath = "../vpn-frontend"
+	}
+	if _, err := os.Stat(filepath.Join(cliPath, "main.go")); err != nil {
+		cliPath = "./aimatos-cli"
+	}
 
 	// Определение объема оперативной памяти
 	ramKB, err := getSystemRAM_KB()
 	needsSwap := false
 	var swapComment string
 	if err == nil {
-		// Если RAM < 2,000,000 KB (~2 GB), инициируем создание Swap
 		if ramKB < 2048000 {
 			needsSwap = true
 			swapComment = fmt.Sprintf("RAM: %.2f GB", float64(ramKB)/1024.0/1024.0)
@@ -330,7 +344,6 @@ func (m *model) setupSimpleSteps() {
 		{Name: "Снятие фоновых блокировок dpkg/apt", Command: "systemctl stop unattended-upgrades 2>/dev/null || true; systemctl stop apt-daily.service 2>/dev/null || true; killall apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a"},
 	}
 
-	// Динамически внедряем шаг конфигурации Swap
 	if needsSwap {
 		m.steps = append(m.steps, installStep{
 			Name: "Настройка Swap-файла 2GB (" + swapComment + ")",
@@ -350,7 +363,7 @@ func (m *model) setupSimpleSteps() {
 		{Name: "Установка платформы Node.js & NPM", Command: "export DEBIAN_FRONTEND=noninteractive && apt-get install -y nodejs"},
 		{Name: "Загрузка Go-lang компилятора (v1.22)", Command: "wget -q https://golang.org/dl/go1.22.2.linux-amd64.tar.gz -O /tmp/go.tar.gz"},
 		{Name: "Развертывание Go-компилятора", Command: "rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && rm /tmp/go.tar.gz && ln -sf /usr/local/go/bin/go /usr/bin/go"},
-		{Name: "Экспорт файлов исходного кода", Command: fmt.Sprintf("cp -r %s/. /opt/aimatos/vpn-master/ && cp -r %s/. /opt/aimatos/vpn-node/ && cp -r %s/. /opt/aimatos/vpn-frontend/ && cp -r %s/. /opt/aimatos/aimatos-cli/ || true", masterPath, nodePath, frontendPath, cliPath)},
+		{Name: "Экспорт файлов исходного кода", Command: fmt.Sprintf("cp -r %s/. /opt/aimatos/vpn-master/ && cp -r %s/. /opt/aimatos/vpn-node/ && cp -r %s/. /opt/aimatos/vpn-frontend/ && cp -r %s/. /opt/aimatos/aimatos-cli/", masterPath, nodePath, frontendPath, cliPath)},
 		{Name: "Создание индексной страницы index.html", Command: `cat << 'EOF' > /opt/aimatos/vpn-frontend/index.html
 <!DOCTYPE html>
 <html lang="en">
