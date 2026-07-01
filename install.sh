@@ -13,7 +13,7 @@ if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}❌ ERROR: Root privileges required!${NC}"
     echo -e "${RED}==============================================================${NC}"
     echo -e "Please run:"
-    echo -e "  • ${GREEN}sudo bash install.sh${NC}"
+    echo -e "  • ${GREEN}curl -sL https://aimatospanel.github.io/vpn-installer/release | sudo bash${NC}"
     echo ""
     exit 1
 fi
@@ -50,11 +50,20 @@ if ! command -v go &> /dev/null; then
 fi
 printf "\r  [   ${GREEN}OK${NC}   ]  Deploying Go compiler...\n"
 
+printf "  [  ${YELLOW}WAIT${NC}  ]  Cloning project repositories..."
+rm -rf /tmp/aimatos-source
+mkdir -p /tmp/aimatos-source
+cd /tmp/aimatos-source
+git clone https://github.com/AimatosPanel/vpn-master.git >> "$LOG_FILE" 2>&1
+git clone https://github.com/AimatosPanel/vpn-node.git >> "$LOG_FILE" 2>&1
+git clone https://github.com/AimatosPanel/vpn-frontend.git >> "$LOG_FILE" 2>&1
+git clone https://github.com/AimatosPanel/vpn-installer.git >> "$LOG_FILE" 2>&1
+printf "\r  [   ${GREEN}OK${NC}   ]  Cloning project repositories...\n"
+
 printf "  [  ${YELLOW}WAIT${NC}  ]  Compiling setup core..."
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
+cd /tmp/aimatos-source/vpn-installer
 go mod init aimatos-installer >> "$LOG_FILE" 2>&1 || true
-go get github.com/charmbracelet/bubbletea github.com/charmbracelet/bubbles github.com/charmbracelet/lipgloss >> "$LOG_FILE" 2>&1
+go mod tidy >> "$LOG_FILE" 2>&1
 go build -o /tmp/aimatos-installer main.go >> "$LOG_FILE" 2>&1
 printf "\r  [   ${GREEN}OK${NC}   ]  Compiling setup core...\n"
 
