@@ -434,24 +434,28 @@ func (m *model) setupSimpleSteps() {
 		}
 	}
 
-	// === ШАГ 1: Подготовка хост-системы
+// === ШАГ 1: Подготовка хост-системы
 	var prepCmds []string
 	prepCmds = append(prepCmds, "mkdir -p /opt/aimatos/vpn-master /opt/aimatos/vpn-node /opt/aimatos/vpn-frontend /opt/aimatos/backups /opt/aimatos/aimatos-cli")
 	prepCmds = append(prepCmds, "systemctl stop vpn-master.service vpn-node.service aimatos-port-hop.service sing-box.service 2>/dev/null || true")
 	prepCmds = append(prepCmds, "killall vpn-master vpn-node sing-box 2>/dev/null || true")
 	prepCmds = append(prepCmds, "rm -f /opt/aimatos/vpn-master/vpn-master /opt/aimatos/vpn-node/vpn-node /opt/aimatos/vpn-node/sing-box /usr/local/bin/aimatos 2>/dev/null || true")
-	prepCmds = append(prepCmds, "systemctl stop unattended-upgrades 2>/dev/null || true; systemctl stop apt-daily.service 2>/dev/null || true; killall apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a")
+	
+	// Очистка блокировок APT и удаление старых/битых ключей NodeSource
+	prepCmds = append(prepCmds, "systemctl stop unattended-upgrades 2>/dev/null || true; systemctl stop apt-daily.service 2>/dev/null || true; killall apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock /etc/apt/sources.list.d/nodesource*; dpkg --configure -a || true")
 	
 	if needsSwap && !m.selectedOpts[2] {
-		prepCmds = append(prepCmds, "if [ ! -f /swapfile ]; then fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048; chmod 600 /swapfile; mkswap /swapfile && swapon /swapfile; echo '/swapfile none swap sw 0 0' >> /etc/fstab; fi")
+		prepCmds = append(prepCmds, "( if [ ! -f /swapfile ]; then fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048; chmod 600 /swapfile; mkswap /swapfile && swapon /swapfile || true; fi )")
 	}
+	
+	// Обновление и установка базовых утилит (без проблемного libcurl4t64)
 	prepCmds = append(prepCmds, "export DEBIAN_FRONTEND=noninteractive && apt-get update -y")
-	prepCmds = append(prepCmds, "export DEBIAN_FRONTEND=noninteractive && apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' libcurl4t64 curl git openssl sqlite3 build-essential ufw")
+	prepCmds = append(prepCmds, "export DEBIAN_FRONTEND=noninteractive && apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' curl git openssl sqlite3 build-essential ufw ca-certificates")
 
 	m.steps = []installStep{
 		{Name: "Подготовка хост-системы и зависимостей", Command: strings.Join(prepCmds, " && ")},
 	}
-
+	
 	// === ШАГ 2: Применение системных оптимизаций
 	var optCmds []string
 	if m.selectedOpts[0] { optCmds = append(optCmds, getOptSubCommand("1-clean-and-firewall.sh")) }
