@@ -1,0 +1,16 @@
+[Unit]
+Description=AimatosPanel Standalone Frontend Micro-server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={{INSTALL_DIR}}/vpn-frontend
+ExecStart={{INSTALL_DIR}}/vpn-frontend/server-bin
+Restart=always
+RestartSec=5
+Environment=PORT={{PORT}}
+LimitNOFILE=10000
+
+[Install]
+WantedBy=multi-user.target

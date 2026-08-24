@@ -1,0 +1,6 @@
+panel.db
+node.db
+sing-box
+*.tar.gz
+logs/
+dist/
