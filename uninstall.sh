@@ -2,8 +2,11 @@
 set -eo pipefail
 
 # ==============================================================================
-#  AIMATOS PANEL — UNINSTALLER BOOTSTRAPPER
+#  AIMATOS PANEL — UNINSTALLER BOOTSTRAPPER (BULLETPROOF)
 # ==============================================================================
+
+# 1. Принудительно выходим из любой удаленной/временной папки в /root
+cd /root 2>/dev/null || cd /tmp 2>/dev/null || cd /
 
 CLR_RED="\033[1;31m"
 CLR_YELLOW="\033[1;33m"
@@ -36,7 +39,6 @@ if [[ "${1:-}" == "--force" || "${1:-}" == "--silent" ]]; then
           /etc/systemd/system/sing-box.service
     systemctl daemon-reload
 
-    # Сохраняем последний аварийный бэкап
     if [[ -f /opt/aimatos/vpn-master/panel.db ]]; then
         cp /opt/aimatos/vpn-master/panel.db "/root/aimatos_backup_before_purge_$(date +%s).db" 2>/dev/null || true
     fi
@@ -48,7 +50,7 @@ if [[ "${1:-}" == "--force" || "${1:-}" == "--silent" ]]; then
     exit 0
 fi
 
-# Интерактивный режим
+# Интерактивный TUI режим
 clear
 echo -e "${CLR_RED}╔══════════════════════════════════════════════════════════════════════╗${CLR_RESET}"
 echo -e "${CLR_RED}║${CLR_RESET}   ${CLR_YELLOW}⚠️  AIMATOS PANEL — ИНТЕРАКТИВНЫЙ ДЕИНСТАЛЛЯТОР                   ${CLR_RED}║${CLR_RESET}"
@@ -56,7 +58,8 @@ echo -e "${CLR_RED}║${CLR_RESET}   ${CLR_GRAY}Подготовка безоп�
 echo -e "${CLR_RED}╚══════════════════════════════════════════════════════════════════════╝${CLR_RESET}"
 echo ""
 
-log_step "Подготовка компилятора Go..."
+# Проверка Go
+log_step "Проверка окружения Go..."
 if ! command -v go &> /dev/null; then
     wget -q https://golang.org/dl/go1.22.2.linux-amd64.tar.gz -O /tmp/go.tar.gz
     rm -rf /usr/local/go
@@ -66,12 +69,28 @@ if ! command -v go &> /dev/null; then
     ln -sf /usr/local/go/bin/go /usr/bin/go
 fi
 
-cd "$SRC_DIR/aimatos-uninstaller"
+# Безопасное скачивание репозитория
+SRC_DIR="/tmp/aimatos-uninstaller-src"
+rm -rf "$SRC_DIR"
+mkdir -p "$SRC_DIR"
+git clone --depth 1 https://github.com/AimatosPanel/vpn-installer.git "$SRC_DIR" >/dev/null 2>&1
+
+# Поиск папки с деинсталлятором
+if [[ -d "$SRC_DIR/aimatos-uninstaller" ]]; then
+    TARGET_DIR="$SRC_DIR/aimatos-uninstaller"
+elif [[ -d "$SRC_DIR/vpn-installer/aimatos-uninstaller" ]]; then
+    TARGET_DIR="$SRC_DIR/vpn-installer/aimatos-uninstaller"
+else
+    TARGET_DIR="$SRC_DIR"
+fi
+
+cd "$TARGET_DIR"
 go mod init aimatos-uninstaller 2>/dev/null || true
 go get github.com/charmbracelet/bubbletea github.com/charmbracelet/bubbles github.com/charmbracelet/lipgloss modernc.org/sqlite 2>/dev/null || true
 go mod tidy >/dev/null 2>&1
 go build -ldflags="-s -w" -o /tmp/aimatos-uninstaller-bin .
 
 clear
+cd /root
 /tmp/aimatos-uninstaller-bin || true
 exit 0
