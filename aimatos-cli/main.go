@@ -271,9 +271,10 @@ func (m *model) handleMainMenuSelection() tea.Cmd {
 		m.state = stateToolsMenu
 		m.toolsChoice = 0
 	case 6:
-		m.db.Close()
-		os.Exit(0)
-	}
+    c := exec.Command("bash", "-c", "curl -sSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/update.sh | bash")
+    return tea.ExecProcess(c, func(err error) tea.Msg {
+        return logFinishedMsg{err}
+    })
 	return nil
 }
 
