@@ -31,12 +31,12 @@ const (
 )
 
 var (
-	accentColor  = lipgloss.Color("99")
-	pinkColor    = lipgloss.Color("205")
+	accentColor  = lipgloss.Color("99")  // Фиолетовый
+	pinkColor    = lipgloss.Color("205") // Розовый
 	grayColor    = lipgloss.Color("244")
-	successColor = lipgloss.Color("46")
-	failColor    = lipgloss.Color("196")
-	amberColor   = lipgloss.Color("214")
+	successColor = lipgloss.Color("46")  // Зеленый
+	failColor    = lipgloss.Color("196") // Красный
+	amberColor   = lipgloss.Color("214") // Оранжевый
 
 	titleStyle    = lipgloss.NewStyle().Foreground(pinkColor).Bold(true).Align(lipgloss.Center)
 	subtitleStyle = lipgloss.NewStyle().Foreground(grayColor).Align(lipgloss.Center)
@@ -244,6 +244,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.webPort = getMasterServicePort()
 			m.apiKey = m.getSetting("api_key", "SuperSecretAdminKey123")
 		case "uninstall":
+			// Если папка или база данных стёрты — выходим из консоли
 			if _, err := os.Stat(DBPath); os.IsNotExist(err) {
 				if m.db != nil { m.db.Close() }
 				clearCmd := exec.Command("clear")
@@ -385,7 +386,6 @@ func (m *model) handleMainMenu() tea.Cmd {
 		m.input.Placeholder = "panel.yourdomain.com"
 		m.input.Focus()
 	case 5:
-		// Сброс и усиление крипто-ключей
 		m.performSecretsRegeneration()
 		m.state = stateResetSecrets
 	case 6:
@@ -397,7 +397,7 @@ func (m *model) handleMainMenu() tea.Cmd {
 		m.state = stateToolsMenu
 		m.toolsChoice = 0
 	case 8:
-		c := exec.Command("bash", "-c", "curl -sSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/uninstall.sh | bash")
+		c := exec.Command("bash", "-c", "curl -fsSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/uninstall.sh -o /tmp/aimatos_un.sh && bash /tmp/aimatos_un.sh")
 		return tea.ExecProcess(c, func(err error) tea.Msg {
 			return extProcessFinishedMsg{action: "uninstall", err: err}
 		})
@@ -439,7 +439,6 @@ func (m *model) performSecretsRegeneration() {
 	m.apiKey = newAPIKey
 	m.newSecrets["Admin API Key"] = newAPIKey
 
-	// Перезапуск служб для применения
 	_ = exec.Command("systemctl", "restart", "vpn-master.service", "vpn-node.service").Run()
 	m.outputMsg = "Все секретные ключи перегенерированы и применены!"
 }

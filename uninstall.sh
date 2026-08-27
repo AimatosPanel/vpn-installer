@@ -5,10 +5,10 @@ set -eo pipefail
 #  AIMATOS PANEL — ULTIMATE CLEAN UNINSTALLER (PURE BASH)
 # ==============================================================================
 
-# 1. Принудительно переходим в /root во избежание сбоя getcwd (удаленная директория)
+# 1. Принудительно выходим в /root во избежание сбоя getcwd (удаленная директория)
 cd /root 2>/dev/null || cd /tmp 2>/dev/null || cd /
 
-# Цветовая палитра Aimatos
+# Цветовая палитра Aimatos Cyberpunk
 CLR_PURPLE="\033[1;35m"
 CLR_CYAN="\033[1;36m"
 CLR_GREEN="\033[1;32m"
@@ -81,7 +81,7 @@ perform_full_uninstall() {
     
     systemctl daemon-reload 2>/dev/null || true
     systemctl reset-failed 2>/dev/null || true
-    log_success "Службы удалены, порты (8080, 8085, 8443, 8444, 8445) освобождены"
+    log_success "Службы удалены, сетевые порты освобождены"
 
     # 3. Удаление рабочих каталогов и бинарников
     log_step "[3/8] Удаление директорий /opt/aimatos и бинарных файлов..."
@@ -165,7 +165,7 @@ perform_full_uninstall() {
 }
 
 # ------------------------------------------------------------------------------
-# ТОЧКА ВХОДА: ПРОВЕРКА ФЛАГОВ И ИНТЕРАКТИВНЫЙ ДИАЛОГ
+# ТОЧКА ВХОДА
 # ------------------------------------------------------------------------------
 
 # Автоматический / тихий режим (--force, -y, --yes, --silent)
@@ -190,10 +190,16 @@ echo ""
 
 TARGET_WORD="УДАЛИТЬ"
 echo -ne " Для подтверждения введите ${CLR_BOLD}${CLR_RED}${TARGET_WORD}${CLR_RESET} (или любую другую клавишу для отмены): "
-read -r USER_INPUT
 
-# Приведение к верхнему регистру для удобства
-USER_UPPER=$(echo "$USER_INPUT" | tr '[:lower:]' '[:upper:]')
+# Считывание ввода строго с терминала /dev/tty (работает при curl | bash)
+if [ -c /dev/tty ]; then
+    read -r USER_INPUT < /dev/tty
+else
+    read -r USER_INPUT
+fi
+
+# Приведение к верхнему регистру и удаление лишних пробелов
+USER_UPPER=$(echo "$USER_INPUT" | tr '[:lower:]' '[:upper:]' | xargs)
 
 if [[ "$USER_UPPER" == "$TARGET_WORD" || "$USER_UPPER" == "DELETE" ]]; then
     perform_full_uninstall
