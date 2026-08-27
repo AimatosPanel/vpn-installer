@@ -21,19 +21,17 @@ import (
 )
 
 const (
-	DBPath           = "/opt/aimatos/vpn-master/panel.db"
-	BackupsDir       = "/opt/aimatos/backups"
+	DBPath            = "/opt/aimatos/vpn-master/panel.db"
+	BackupsDir        = "/opt/aimatos/backups"
 	MasterServiceFile = "/etc/systemd/system/vpn-master.service"
 )
 
-// Цветовая схема Aimatos Cyberpunk
 var (
-	accentColor  = lipgloss.Color("99")  // Фиолетовый
-	pinkColor    = lipgloss.Color("205") // Розовый
+	accentColor  = lipgloss.Color("99")
+	pinkColor    = lipgloss.Color("205")
 	grayColor    = lipgloss.Color("244")
-	successColor = lipgloss.Color("46")  // Зеленый
-	failColor    = lipgloss.Color("196") // Красный
-	amberColor   = lipgloss.Color("214") // Оранжевый
+	successColor = lipgloss.Color("46")
+	failColor    = lipgloss.Color("196")
 
 	titleStyle    = lipgloss.NewStyle().Foreground(pinkColor).Bold(true).Align(lipgloss.Center)
 	subtitleStyle = lipgloss.NewStyle().Foreground(grayColor).Align(lipgloss.Center)
@@ -54,6 +52,7 @@ const (
 	stateNodeCluster
 	stateConfigMenu
 	stateConfigEdit
+	stateDomainSSL
 	stateToolsMenu
 	stateBackupList
 )
@@ -86,23 +85,16 @@ type model struct {
 	serverIP       string
 	webPort        string
 	nodePort       string
+	panelDomain    string
 	backups        []BackupItem
 	currentSetting string
 	settingLabel   string
 }
 
-// -------------------------------------------------------------
-// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-// -------------------------------------------------------------
-
 func formatBytes(bytes int64) string {
-	if bytes <= 0 {
-		return "0 B"
-	}
+	if bytes <= 0 { return "0 B" }
 	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
+	if bytes < unit { return fmt.Sprintf("%d B", bytes) }
 	div, exp := int64(unit), 0
 	for n := bytes / unit; n >= unit; n /= unit {
 		div *= unit
@@ -114,56 +106,40 @@ func formatBytes(bytes int64) string {
 func getPublicIP() string {
 	client := http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get("https://api.ipify.org")
-	if err != nil {
-		return "127.0.0.1"
-	}
+	if err != nil { return "127.0.0.1" }
 	defer resp.Body.Close()
 	ip, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "127.0.0.1"
-	}
+	if err != nil { return "127.0.0.1" }
 	return string(ip)
 }
 
 func getMasterServicePort() string {
 	data, err := os.ReadFile(MasterServiceFile)
-	if err != nil {
-		return "8080"
-	}
+	if err != nil { return "8080" }
 	re := regexp.MustCompile(`Environment=PORT=(\d+)`)
 	match := re.FindStringSubmatch(string(data))
-	if len(match) > 1 {
-		return match[1]
-	}
+	if len(match) > 1 { return match[1] }
 	return "8080"
 }
 
 func setMasterServicePort(port string) error {
 	data, err := os.ReadFile(MasterServiceFile)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	re := regexp.MustCompile(`Environment=PORT=\d+`)
 	newContent := re.ReplaceAllString(string(data), fmt.Sprintf("Environment=PORT=%s", port))
 	return os.WriteFile(MasterServiceFile, []byte(newContent), 0644)
 }
 
 func (m *model) getSetting(key, fallback string) string {
-	if m.db == nil {
-		return fallback
-	}
+	if m.db == nil { return fallback }
 	var val string
 	err := m.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&val)
-	if err != nil || val == "" {
-		return fallback
-	}
+	if err != nil || val == "" { return fallback }
 	return val
 }
 
 func (m *model) setSetting(key, val string) error {
-	if m.db == nil {
-		return fmt.Errorf("нет связи с БД")
-	}
+	if m.db == nil { return fmt.Errorf("нет связи с БД") }
 	_, err := m.db.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", key, val)
 	return err
 }
@@ -171,9 +147,7 @@ func (m *model) setSetting(key, val string) error {
 func (m *model) reloadBackups() {
 	m.backups = nil
 	files, err := filepath.Glob(filepath.Join(BackupsDir, "panel_backup_*.db"))
-	if err != nil {
-		return
-	}
+	if err != nil { return }
 	for _, f := range files {
 		info, err := os.Stat(f)
 		if err == nil {
@@ -187,10 +161,6 @@ func (m *model) reloadBackups() {
 	}
 }
 
-// -------------------------------------------------------------
-// ИНИЦИАЛИЗАЦИЯ И ОБРАБОТКА СОБЫТИЙ
-// -------------------------------------------------------------
-
 func initialModel() model {
 	db, err := sql.Open("sqlite", DBPath+"?_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -199,9 +169,9 @@ func initialModel() model {
 	}
 
 	ti := textinput.New()
-	ti.Placeholder = "Новое значение..."
+	ti.Placeholder = "Значение..."
 	ti.CharLimit = 64
-	ti.Width = 30
+	ti.Width = 32
 
 	s := spinner.New()
 	s.Spinner = spinner.Dot
@@ -221,6 +191,7 @@ func initialModel() model {
 
 	m.apiKey = m.getSetting("api_key", "SuperSecretAdminKey123")
 	m.nodePort = m.getSetting("node_port", "8085")
+	m.panelDomain = m.getSetting("panel_domain", "")
 	return m
 }
 
@@ -249,11 +220,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.webPort = getMasterServicePort()
 			m.apiKey = m.getSetting("api_key", "SuperSecretAdminKey123")
 		case "uninstall":
-			// Если база данных стёрта — система удалена, завершаем работу
 			if _, err := os.Stat(DBPath); os.IsNotExist(err) {
-				if m.db != nil {
-					m.db.Close()
-				}
+				if m.db != nil { m.db.Close() }
 				clearCmd := exec.Command("clear")
 				clearCmd.Stdout = os.Stdout
 				_ = clearCmd.Run()
@@ -267,15 +235,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			if m.db != nil {
-				m.db.Close()
-			}
+			if m.db != nil { m.db.Close() }
 			return m, tea.Quit
 		case "q":
 			if m.state == stateMain {
-				if m.db != nil {
-					m.db.Close()
-				}
+				if m.db != nil { m.db.Close() }
 				return m, tea.Quit
 			}
 			m.state = stateMain
@@ -287,30 +251,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stateMain:
 			switch msg.String() {
 			case "up", "k":
-				if m.mainChoice > 0 {
-					m.mainChoice--
-				}
+				if m.mainChoice > 0 { m.mainChoice-- }
 			case "down", "j":
-				if m.mainChoice < 7 {
-					m.mainChoice++
-				}
+				if m.mainChoice < 8 { m.mainChoice++ }
 			case "enter":
 				cmd := m.handleMainMenu()
-				if cmd != nil {
-					return m, cmd
-				}
+				if cmd != nil { return m, cmd }
 			}
 
 		case stateConfigMenu:
 			switch msg.String() {
 			case "up", "k":
-				if m.configChoice > 0 {
-					m.configChoice--
-				}
+				if m.configChoice > 0 { m.configChoice-- }
 			case "down", "j":
-				if m.configChoice < 6 {
-					m.configChoice++
-				}
+				if m.configChoice < 6 { m.configChoice++ }
 			case "enter":
 				m.handleConfigMenu()
 			case "esc":
@@ -328,16 +282,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input, cmd = m.input.Update(msg)
 			return m, cmd
 
+		case stateDomainSSL:
+			switch msg.String() {
+			case "enter":
+				m.setupDomainHTTPS()
+			case "esc":
+				m.state = stateMain
+			}
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+
 		case stateToolsMenu:
 			switch msg.String() {
 			case "up", "k":
-				if m.toolsChoice > 0 {
-					m.toolsChoice--
-				}
+				if m.toolsChoice > 0 { m.toolsChoice-- }
 			case "down", "j":
-				if m.toolsChoice < 4 {
-					m.toolsChoice++
-				}
+				if m.toolsChoice < 4 { m.toolsChoice++ }
 			case "enter":
 				m.handleToolsMenu()
 			case "esc":
@@ -347,13 +308,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stateBackupList:
 			switch msg.String() {
 			case "up", "k":
-				if m.cursorIndex > 0 {
-					m.cursorIndex--
-				}
+				if m.cursorIndex > 0 { m.cursorIndex-- }
 			case "down", "j":
-				if m.cursorIndex < len(m.backups)-1 {
-					m.cursorIndex++
-				}
+				if m.cursorIndex < len(m.backups)-1 { m.cursorIndex++ }
 			case "enter":
 				if len(m.backups) > 0 {
 					target := m.backups[m.cursorIndex]
@@ -376,10 +333,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// -------------------------------------------------------------
-// ОБРАБОТКА ДЕЙСТВИЙ МЕНЮ
-// -------------------------------------------------------------
-
 func (m *model) handleMainMenu() tea.Cmd {
 	m.outputMsg = ""
 	switch m.mainChoice {
@@ -389,6 +342,7 @@ func (m *model) handleMainMenu() tea.Cmd {
 		m.state = stateLinks
 		m.apiKey = m.getSetting("api_key", "SuperSecretAdminKey123")
 		m.webPort = getMasterServicePort()
+		m.panelDomain = m.getSetting("panel_domain", "")
 	case 2:
 		m.state = stateNodeCluster
 		m.apiKey = m.getSetting("api_key", "SuperSecretAdminKey123")
@@ -397,22 +351,24 @@ func (m *model) handleMainMenu() tea.Cmd {
 		m.state = stateConfigMenu
 		m.configChoice = 0
 	case 4:
-		// Реальный стриминг системного журнала
+		m.state = stateDomainSSL
+		m.input.SetValue(m.panelDomain)
+		m.input.Placeholder = "panel.yourdomain.com"
+		m.input.Focus()
+	case 5:
 		c := exec.Command("journalctl", "-u", "vpn-master.service", "-u", "vpn-node.service", "-n", "50", "-f")
 		return tea.ExecProcess(c, func(err error) tea.Msg {
 			return extProcessFinishedMsg{action: "logs", err: err}
 		})
-	case 5:
+	case 6:
 		m.state = stateToolsMenu
 		m.toolsChoice = 0
-	case 6:
-		// Запуск апдейтера
+	case 7:
 		c := exec.Command("bash", "-c", "if [ -f /tmp/aimatos-updater-bin ]; then /tmp/aimatos-updater-bin; else curl -sSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/update.sh | bash; fi")
 		return tea.ExecProcess(c, func(err error) tea.Msg {
 			return extProcessFinishedMsg{action: "update", err: err}
 		})
-	case 7:
-		// Запуск деинсталлятора
+	case 8:
 		c := exec.Command("bash", "-c", "if [ -f /tmp/aimatos-uninstaller-bin ]; then /tmp/aimatos-uninstaller-bin; else curl -sSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/uninstall.sh | bash; fi")
 		return tea.ExecProcess(c, func(err error) tea.Msg {
 			return extProcessFinishedMsg{action: "uninstall", err: err}
@@ -484,20 +440,49 @@ func (m *model) saveConfigValue() {
 		}
 		_ = m.setSetting(m.currentSetting, newVal)
 		_ = exec.Command("systemctl", "restart", "vpn-master.service", "vpn-node.service").Run()
-		m.outputMsg = fmt.Sprintf("Параметр '%s' изменен на %s! Службы перезапущены.", m.settingLabel, newVal)
+		m.outputMsg = fmt.Sprintf("Параметр '%s' изменен на %s!", m.settingLabel, newVal)
 	} else {
 		_ = m.setSetting(m.currentSetting, newVal)
 		_ = exec.Command("systemctl", "restart", "vpn-master.service", "vpn-node.service").Run()
-		m.outputMsg = fmt.Sprintf("Параметр '%s' обновлен! Конфигурация Sing-Box перезапущена.", m.settingLabel)
+		m.outputMsg = fmt.Sprintf("Параметр '%s' обновлен!", m.settingLabel)
 	}
 
 	m.state = stateConfigMenu
 }
 
+func (m *model) setupDomainHTTPS() {
+	domain := strings.TrimSpace(strings.ToLower(m.input.Value()))
+	if domain == "" {
+		m.outputMsg = "Ошибка: Укажите доменное имя."
+		m.state = stateMain
+		return
+	}
+
+	// Установка Caddy для автоматического выпуска SSL Let's Encrypt и обратного проксирования
+	cmdInstall := `
+		apt-get update -y >/dev/null 2>&1 && apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl >/dev/null 2>&1
+		curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
+		curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null 2>&1
+		apt-get update -y >/dev/null 2>&1 && apt-get install -y caddy >/dev/null 2>&1
+	`
+	_ = exec.Command("bash", "-c", cmdInstall).Run()
+
+	caddyfile := fmt.Sprintf(`%s {
+    reverse_proxy 127.0.0.1:%s
+}`, domain, m.webPort)
+
+	_ = os.WriteFile("/etc/caddy/Caddyfile", []byte(caddyfile), 0644)
+	_ = exec.Command("systemctl", "restart", "caddy").Run()
+	_ = m.setSetting("panel_domain", domain)
+	m.panelDomain = domain
+
+	m.outputMsg = fmt.Sprintf("HTTPS успешно включен! Панель доступна по адресу: https://%s", domain)
+	m.state = stateMain
+}
+
 func (m *model) handleToolsMenu() {
 	switch m.toolsChoice {
 	case 0:
-		// Создание атомарного SQLite бэкапа
 		_ = os.MkdirAll(BackupsDir, 0755)
 		filename := filepath.Join(BackupsDir, fmt.Sprintf("panel_backup_%s.db", time.Now().Format("20060102_150405")))
 		_, err := m.db.Exec(fmt.Sprintf("VACUUM INTO '%s';", filename))
@@ -514,7 +499,6 @@ func (m *model) handleToolsMenu() {
 		m.state = stateBackupList
 
 	case 2:
-		// Активация BBR + FQ
 		cmd := "echo 'net.core.default_qdisc=fq' >> /etc/sysctl.conf && echo 'net.ipv4.tcp_congestion_control=bbr' >> /etc/sysctl.conf && sysctl -p"
 		_ = exec.Command("bash", "-c", cmd).Run()
 		m.outputMsg = "Алгоритм TCP BBR + FQ успешно активирован в ядре!"
@@ -549,10 +533,6 @@ func (m *model) restoreBackup(srcPath string) {
 	}
 	m.state = stateMain
 }
-
-// -------------------------------------------------------------
-// РЕНДЕРИНГ ИНТЕРФЕЙСА (VIEW)
-// -------------------------------------------------------------
 
 func (m model) renderSysStats() string {
 	up, _ := exec.Command("uptime", "-p").Output()
@@ -595,6 +575,7 @@ func (m model) View() string {
 			"Авторизация и вход в Веб-панель",
 			"Параметры и ключи ноды (Подключение других панелей)",
 			"Конфигурация портов и Reality SNI",
+			"Привязать домен и включить HTTPS (SSL Let's Encrypt)",
 			"Журнал системных событий в реальном времени (Логи)",
 			"Резервные копии и оптимизация ядра (BBR)",
 			"Обновить AimatosPanel (Smart Auto-Updater)",
@@ -608,7 +589,7 @@ func (m model) View() string {
 				s.WriteString(fmt.Sprintf("      %s\n", grayStyle.Render(fmt.Sprintf("[%d] %s", i+1, opt))))
 			}
 		}
-		s.WriteString("\n" + helpStyle.Render(" [↑/↓] Навигация  •  [ ENTER ] Выбрать  •  [ Q ] Выход "))
+		s += "\n" + helpStyle.Render(" [↑/↓] Навигация  •  [ ENTER ] Выбрать  •  [ Q ] Выход ")
 
 	case stateStatus:
 		s.WriteString(titleStyle.Render("🛰️  Мониторинг ресурсов и служб ") + "\n\n")
@@ -617,7 +598,11 @@ func (m model) View() string {
 
 	case stateLinks:
 		s.WriteString(titleStyle.Render("🔗 Вход в панель управления ") + "\n\n")
-		s.WriteString(fmt.Sprintf("  • Адрес веб-панели:  %s\n", successStyle.Render(fmt.Sprintf("http://%s:%s", m.serverIP, m.webPort))))
+		urlStr := fmt.Sprintf("http://%s:%s", m.serverIP, m.webPort)
+		if m.panelDomain != "" {
+			urlStr = fmt.Sprintf("https://%s (SSL)", m.panelDomain)
+		}
+		s.WriteString(fmt.Sprintf("  • Адрес веб-панели:  %s\n", successStyle.Render(urlStr)))
 		s.WriteString(fmt.Sprintf("  • Секретный Ключ API: %s\n\n", focusStyle.Render(m.apiKey)))
 		s.WriteString(grayStyle.Render("  Управление клиентами, создание ссылок и статистика\n  доступны через браузер по указанному выше адресу.") + "\n\n")
 		s.WriteString(helpStyle.Render(" Нажмите [ ENTER ] или [ ESC ] для возврата "))
@@ -667,6 +652,12 @@ func (m model) View() string {
 		s.WriteString(fmt.Sprintf("  Параметр: %s\n", focusStyle.Render(m.settingLabel)))
 		s.WriteString(fmt.Sprintf("  Значение: %s\n\n", m.input.View()))
 		s.WriteString(helpStyle.Render(" [ ENTER ] Применить и перезапустить службы  •  [ ESC ] Отмена "))
+
+	case stateDomainSSL:
+		s.WriteString(titleStyle.Render("🔒 Привязка домена и выпуск SSL (HTTPS) ") + "\n\n")
+		s.WriteString("  Введите ваш домен (A-запись домена должна указывать на IP сервера):\n\n")
+		s.WriteString(fmt.Sprintf("  Домен: %s\n\n", m.input.View()))
+		s.WriteString(helpStyle.Render(" [ ENTER ] Выпустить сертификат Let's Encrypt  •  [ ESC ] Отмена "))
 
 	case stateToolsMenu:
 		s.WriteString(titleStyle.Render("🛠️ Системные инструменты и бэкапы ") + "\n\n")
