@@ -66,11 +66,6 @@ if ! command -v go &> /dev/null; then
     ln -sf /usr/local/go/bin/go /usr/bin/go
 fi
 
-SRC_DIR="/tmp/aimatos-uninstaller-src"
-rm -rf "$SRC_DIR"
-mkdir -p "$SRC_DIR"
-git clone --depth 1 https://github.com/AimatosPanel/vpn-installer.git "$SRC_DIR" >/dev/null 2>&1
-
 cd "$SRC_DIR/aimatos-uninstaller"
 go mod init aimatos-uninstaller 2>/dev/null || true
 go get github.com/charmbracelet/bubbletea github.com/charmbracelet/bubbles github.com/charmbracelet/lipgloss modernc.org/sqlite 2>/dev/null || true
@@ -78,4 +73,5 @@ go mod tidy >/dev/null 2>&1
 go build -ldflags="-s -w" -o /tmp/aimatos-uninstaller-bin .
 
 clear
-exec /tmp/aimatos-uninstaller-bin
+/tmp/aimatos-uninstaller-bin || true
+exit 0
