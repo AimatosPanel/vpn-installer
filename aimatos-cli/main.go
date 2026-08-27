@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/ecdh"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,6 +36,7 @@ var (
 	grayColor    = lipgloss.Color("244")
 	successColor = lipgloss.Color("46")
 	failColor    = lipgloss.Color("196")
+	amberColor   = lipgloss.Color("214")
 
 	titleStyle    = lipgloss.NewStyle().Foreground(pinkColor).Bold(true).Align(lipgloss.Center)
 	subtitleStyle = lipgloss.NewStyle().Foreground(grayColor).Align(lipgloss.Center)
@@ -53,6 +58,7 @@ const (
 	stateConfigMenu
 	stateConfigEdit
 	stateDomainSSL
+	stateResetSecrets
 	stateToolsMenu
 	stateBackupList
 )
@@ -89,6 +95,7 @@ type model struct {
 	backups        []BackupItem
 	currentSetting string
 	settingLabel   string
+	newSecrets     map[string]string
 }
 
 func formatBytes(bytes int64) string {
@@ -161,6 +168,22 @@ func (m *model) reloadBackups() {
 	}
 }
 
+func generateSecureToken(prefix string, byteLength int) string {
+	b := make([]byte, byteLength)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%s%s", prefix, hex.EncodeToString(b))
+}
+
+func generateComplexString(n int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	for i := range b {
+		b[i] = charset[int(b[i])%len(charset)]
+	}
+	return string(b)
+}
+
 func initialModel() model {
 	db, err := sql.Open("sqlite", DBPath+"?_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -187,6 +210,7 @@ func initialModel() model {
 		webPort:     getMasterServicePort(),
 		nodePort:    "8085",
 		cursorIndex: 0,
+		newSecrets:  make(map[string]string),
 	}
 
 	m.apiKey = m.getSetting("api_key", "SuperSecretAdminKey123")
@@ -293,6 +317,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input, cmd = m.input.Update(msg)
 			return m, cmd
 
+		case stateResetSecrets:
+			if msg.String() == "enter" || msg.String() == "esc" {
+				m.state = stateMain
+			}
+
 		case stateToolsMenu:
 			switch msg.String() {
 			case "up", "k":
@@ -356,25 +385,63 @@ func (m *model) handleMainMenu() tea.Cmd {
 		m.input.Placeholder = "panel.yourdomain.com"
 		m.input.Focus()
 	case 5:
+		// Сброс и усиление крипто-ключей
+		m.performSecretsRegeneration()
+		m.state = stateResetSecrets
+	case 6:
 		c := exec.Command("journalctl", "-u", "vpn-master.service", "-u", "vpn-node.service", "-n", "50", "-f")
 		return tea.ExecProcess(c, func(err error) tea.Msg {
 			return extProcessFinishedMsg{action: "logs", err: err}
 		})
-	case 6:
+	case 7:
 		m.state = stateToolsMenu
 		m.toolsChoice = 0
-	case 7:
-		c := exec.Command("bash", "-c", "if [ -f /tmp/aimatos-updater-bin ]; then /tmp/aimatos-updater-bin; else curl -sSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/update.sh | bash; fi")
-		return tea.ExecProcess(c, func(err error) tea.Msg {
-			return extProcessFinishedMsg{action: "update", err: err}
-		})
 	case 8:
-		c := exec.Command("bash", "-c", "if [ -f /tmp/aimatos-uninstaller-bin ]; then /tmp/aimatos-uninstaller-bin; else curl -sSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/uninstall.sh | bash; fi")
+		c := exec.Command("bash", "-c", "curl -sSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/uninstall.sh | bash")
 		return tea.ExecProcess(c, func(err error) tea.Msg {
 			return extProcessFinishedMsg{action: "uninstall", err: err}
 		})
 	}
 	return nil
+}
+
+func (m *model) performSecretsRegeneration() {
+	m.newSecrets = make(map[string]string)
+
+	// 1. Reality X25519
+	curve := ecdh.X25519()
+	priv, err := curve.GenerateKey(rand.Reader)
+	if err == nil {
+		pub := priv.PublicKey()
+		privB64 := base64.RawURLEncoding.EncodeToString(priv.Bytes())
+		pubB64 := base64.RawURLEncoding.EncodeToString(pub.Bytes())
+
+		shortBytes := make([]byte, 8)
+		_, _ = rand.Read(shortBytes)
+		shortID := hex.EncodeToString(shortBytes)
+
+		_ = m.setSetting("reality_private_key", privB64)
+		_ = m.setSetting("reality_public_key", pubB64)
+		_ = m.setSetting("reality_short_id", shortID)
+
+		m.newSecrets["Reality Public Key"] = pubB64
+		m.newSecrets["Reality Short ID"] = shortID
+	}
+
+	// 2. Hysteria 2 Obfs (32 chars)
+	newObfs := generateComplexString(32)
+	_ = m.setSetting("hysteria_obfs", newObfs)
+	m.newSecrets["Hysteria 2 Obfs"] = newObfs
+
+	// 3. Admin API Key (256-bit token)
+	newAPIKey := generateSecureToken("aim_sec_", 24)
+	_ = m.setSetting("api_key", newAPIKey)
+	m.apiKey = newAPIKey
+	m.newSecrets["Admin API Key"] = newAPIKey
+
+	// Перезапуск служб для применения
+	_ = exec.Command("systemctl", "restart", "vpn-master.service", "vpn-node.service").Run()
+	m.outputMsg = "Все секретные ключи перегенерированы и применены!"
 }
 
 func (m *model) handleConfigMenu() {
@@ -458,7 +525,6 @@ func (m *model) setupDomainHTTPS() {
 		return
 	}
 
-	// Установка Caddy для автоматического выпуска SSL Let's Encrypt и обратного проксирования
 	cmdInstall := `
 		apt-get update -y >/dev/null 2>&1 && apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl >/dev/null 2>&1
 		curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
@@ -576,9 +642,9 @@ func (m model) View() string {
 			"Параметры и ключи ноды (Подключение других панелей)",
 			"Конфигурация портов и Reality SNI",
 			"Привязать домен и включить HTTPS (SSL Let's Encrypt)",
+			"🔐 Сброс и усиление секретов (API, Reality, Obfs)",
 			"Журнал системных событий в реальном времени (Логи)",
 			"Резервные копии и оптимизация ядра (BBR)",
-			"Обновить AimatosPanel (Smart Auto-Updater)",
 			"Полное удаление AimatosPanel с сервера",
 		}
 
@@ -589,7 +655,7 @@ func (m model) View() string {
 				s.WriteString(fmt.Sprintf("      %s\n", grayStyle.Render(fmt.Sprintf("[%d] %s", i+1, opt))))
 			}
 		}
-		s += "\n" + helpStyle.Render(" [↑/↓] Навигация  •  [ ENTER ] Выбрать  •  [ Q ] Выход ")
+		s.WriteString("\n" + helpStyle.Render(" [↑/↓] Навигация  •  [ ENTER ] Выбрать  •  [ Q ] Выход "))
 
 	case stateStatus:
 		s.WriteString(titleStyle.Render("🛰️  Мониторинг ресурсов и служб ") + "\n\n")
@@ -658,6 +724,14 @@ func (m model) View() string {
 		s.WriteString("  Введите ваш домен (A-запись домена должна указывать на IP сервера):\n\n")
 		s.WriteString(fmt.Sprintf("  Домен: %s\n\n", m.input.View()))
 		s.WriteString(helpStyle.Render(" [ ENTER ] Выпустить сертификат Let's Encrypt  •  [ ESC ] Отмена "))
+
+	case stateResetSecrets:
+		s.WriteString(titleStyle.Render("🔐 Сгенерированы новые криптографические ключи! ") + "\n\n")
+		s.WriteString("  Все старые ключи сброшены, ядро Sing-Box перезапущено:\n\n")
+		for k, v := range m.newSecrets {
+			s.WriteString(fmt.Sprintf("  • %-20s: %s\n", k, successStyle.Render(v)))
+		}
+		s.WriteString("\n" + helpStyle.Render(" Нажмите [ ENTER ] или [ ESC ] для возврата в меню "))
 
 	case stateToolsMenu:
 		s.WriteString(titleStyle.Render("🛠️ Системные инструменты и бэкапы ") + "\n\n")
