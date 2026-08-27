@@ -56,7 +56,6 @@ type model struct {
 
 type stepResultMsg struct{ err error }
 
-// Функция поиска и загрузки шаблона (Локально -> Удаленно из репозитория GitHub)
 func getTemplate(filename string) (string, error) {
 	localPaths := []string{
 		filepath.Join("templates", filename),
@@ -155,7 +154,7 @@ func runSystemCommand(command string) tea.Cmd {
 
 		err = cmd.Run()
 		time.Sleep(800 * time.Millisecond)
-		
+
 		return stepResultMsg{err: err}
 	}
 }
@@ -205,8 +204,8 @@ var (
 			Border(lipgloss.DoubleBorder()).
 			BorderForeground(accentColor).
 			Padding(1, 4).
-			Width(68).
-			Height(18)
+			Width(72).
+			Height(19)
 
 	helpStyle    = lipgloss.NewStyle().Foreground(grayColor).Align(lipgloss.Center)
 	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("46")).Bold(true)
@@ -239,8 +238,10 @@ func initialModel() model {
 		"Включение ZRAM, отключение HDD Swap, noatime (Скрипт 3)",
 		"CPU Performance governor, irqbalance, ulimit (Скрипт 4)",
 		"Служба точного времени Chrony и SSH шифры (Скрипт 5)",
+		"Удалить компиляторы (Go, Node.js) после завершения установки",
 	}
-	selectedOpts := map[int]bool{0: true, 1: true, 2: true, 3: true, 4: true}
+	// Первые 5 оптимизаций включены по умолчанию, удаление компиляторов (индекс 5) выключено
+	selectedOpts := map[int]bool{0: true, 1: true, 2: true, 3: true, 4: true, 5: false}
 
 	return model{
 		state:         stateWelcome,
@@ -434,29 +435,28 @@ func (m *model) setupSimpleSteps() {
 		}
 	}
 
-// === ШАГ 1: Подготовка хост-системы
+	// === ШАГ 1: Подготовка хост-системы
 	var prepCmds []string
 	prepCmds = append(prepCmds, "mkdir -p /opt/aimatos/vpn-master /opt/aimatos/vpn-node /opt/aimatos/vpn-frontend /opt/aimatos/backups /opt/aimatos/aimatos-cli")
 	prepCmds = append(prepCmds, "systemctl stop vpn-master.service vpn-node.service aimatos-port-hop.service sing-box.service 2>/dev/null || true")
 	prepCmds = append(prepCmds, "killall vpn-master vpn-node sing-box 2>/dev/null || true")
 	prepCmds = append(prepCmds, "rm -f /opt/aimatos/vpn-master/vpn-master /opt/aimatos/vpn-node/vpn-node /opt/aimatos/vpn-node/sing-box /usr/local/bin/aimatos 2>/dev/null || true")
-	
-	// Очистка блокировок APT и удаление старых/битых ключей NodeSource
+
+	// Очистка блокировок APT
 	prepCmds = append(prepCmds, "systemctl stop unattended-upgrades 2>/dev/null || true; systemctl stop apt-daily.service 2>/dev/null || true; killall apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock /etc/apt/sources.list.d/nodesource*; dpkg --configure -a || true")
-	
+
 	if needsSwap && !m.selectedOpts[2] {
 		prepCmds = append(prepCmds, "( if [ ! -f /swapfile ]; then fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048; chmod 600 /swapfile; mkswap /swapfile && swapon /swapfile || true; fi )")
 	}
-	
-	// Обновление и установка базовых утилит (без проблемного libcurl4t64)
+
 	prepCmds = append(prepCmds, "export DEBIAN_FRONTEND=noninteractive && apt-get update -y")
 	prepCmds = append(prepCmds, "export DEBIAN_FRONTEND=noninteractive && apt-get install -y -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' curl git openssl sqlite3 build-essential ufw ca-certificates")
 
 	m.steps = []installStep{
 		{Name: "Подготовка хост-системы и зависимостей", Command: strings.Join(prepCmds, " && ")},
 	}
-	
-	// === ШАГ 2: Применение системных оптимизаций
+
+	// === ШАГ 2: Системные оптимизации ядра
 	var optCmds []string
 	if m.selectedOpts[0] { optCmds = append(optCmds, getOptSubCommand("1-clean-and-firewall.sh")) }
 	if m.selectedOpts[1] { optCmds = append(optCmds, getOptSubCommand("2-network-and-buffers.sh")) }
@@ -478,27 +478,22 @@ func (m *model) setupSimpleSteps() {
 		"ln -sf /usr/local/go/bin/go /usr/bin/go"
 	m.steps = append(m.steps, installStep{Name: "Развертывание компиляторов Go и Node.js", Command: compilersCmd})
 
-	// === ШАГ 4: Импорт исходного кода и сборка веб-панели
-	indexHTMLCmd := "if [ -f /tmp/aimatos-source/vpn-installer/templates/index.html ]; then " +
-		"cp /tmp/aimatos-source/vpn-installer/templates/index.html /opt/aimatos/vpn-frontend/index.html; " +
-		"elif [ -f ./templates/index.html ]; then " +
-		"cp ./templates/index.html /opt/aimatos/vpn-frontend/index.html; " +
-		"else " +
-		"curl -sSL https://raw.githubusercontent.com/AimatosPanel/vpn-installer/main/templates/index.html > /opt/aimatos/vpn-frontend/index.html; " +
-		"fi"
+	// === ШАГ 4: Сборка React-фронтенда
+	indexHTMLCmd := "cat << 'EOF' > /opt/aimatos/vpn-frontend/index.html\n" +
+		"<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\" />\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n<title>AimatosPanel</title>\n</head>\n<body class=\"bg-[#141218] text-[#E6E1E5]\">\n<div id=\"root\"></div>\n<script type=\"module\" src=\"/src/main.jsx\"></script>\n</body>\n</html>\nEOF"
 
 	frontendBuildCmd := fmt.Sprintf(
 		"cp -r %s/. /opt/aimatos/vpn-master/ && cp -r %s/. /opt/aimatos/vpn-node/ && cp -r %s/. /opt/aimatos/vpn-frontend/ && cp -r %s/. /opt/aimatos/aimatos-cli/ && "+
 			"%s && "+
-			"cd /opt/aimatos/vpn-frontend && npm install && npm run build && rm -rf /opt/aimatos/vpn-master/dist && cp -r /opt/aimatos/vpn-frontend/dist /opt/aimatos/vpn-master/dist",
+			"cd /opt/aimatos/vpn-frontend && npm install --legacy-peer-deps --no-audit --no-fund && npm run build && rm -rf /opt/aimatos/vpn-master/dist && cp -r /opt/aimatos/vpn-frontend/dist /opt/aimatos/vpn-master/dist",
 		masterPath, nodePath, frontendPath, cliPath, indexHTMLCmd,
 	)
 	m.steps = append(m.steps, installStep{Name: "Экспорт исходного кода и сборка React-интерфейса", Command: frontendBuildCmd})
 
 	// === ШАГ 5: Компиляция Go-модулей
-	compileGoCmd := "cd /opt/aimatos/vpn-master && go mod tidy && go build -o vpn-master . && " +
-		"cd /opt/aimatos/vpn-node && go mod tidy && go build -o vpn-node . && " +
-		"cd /opt/aimatos/aimatos-cli && go mod init aimatos-cli 2>/dev/null || true && go get github.com/charmbracelet/bubbletea github.com/charmbracelet/bubbles github.com/charmbracelet/lipgloss modernc.org/sqlite && go mod tidy && go build -o /usr/local/bin/aimatos ."
+	compileGoCmd := "cd /opt/aimatos/vpn-master && sed -i 's/go 1\\.25.*/go 1.22/g' go.mod 2>/dev/null || true && go mod tidy && go build -ldflags=\"-s -w\" -o vpn-master . && " +
+		"cd /opt/aimatos/vpn-node && go mod tidy && go build -ldflags=\"-s -w\" -o vpn-node . && " +
+		"cd /opt/aimatos/aimatos-cli && go mod init aimatos-cli 2>/dev/null || true && go get github.com/charmbracelet/bubbletea github.com/charmbracelet/bubbles github.com/charmbracelet/lipgloss modernc.org/sqlite && go mod tidy && go build -ldflags=\"-s -w\" -o /usr/local/bin/aimatos ."
 	m.steps = append(m.steps, installStep{Name: "Компиляция исполняемых файлов (Master, Node, CLI)", Command: compileGoCmd})
 
 	// === ШАГ 6: Интеграция Sing-Box и SSL
@@ -506,7 +501,7 @@ func (m *model) setupSimpleSteps() {
 		"openssl req -x509 -newkey rsa:2048 -keyout /opt/aimatos/vpn-node/server.key -out /opt/aimatos/vpn-node/server.crt -sha256 -days 3650 -nodes -subj '/CN=your-server'"
 	m.steps = append(m.steps, installStep{Name: "Интеграция сетевого ядра Sing-Box и SSL", Command: singboxCmd})
 
-	// === ШАГ 7: Регистрация системных служб и брандмауэра
+	// === ШАГ 7: Регистрация системных служб
 	masterService, errM := loadTemplateAndResolve("vpn-master.service", map[string]string{
 		"{{INSTALL_DIR}}": "/opt/aimatos",
 		"{{PORT}}":        "8080",
@@ -525,7 +520,6 @@ func (m *model) setupSimpleSteps() {
 	if errN != nil { m.err = fmt.Errorf("сбой загрузки vpn-node.service: %v", errN); return }
 	if errH != nil { m.err = fmt.Errorf("сбой загрузки aimatos-port-hop.service: %v", errH); return }
 
-	// Добавлено условие if command -v ufw для избежания конфликта с nftables
 	registerServicesCmd := fmt.Sprintf(`
                 cat << 'EOF' > /etc/systemd/system/vpn-master.service
 %s
@@ -549,12 +543,21 @@ EOF
             `, masterService, nodeService, portHopService, m.apiKey)
 	m.steps = append(m.steps, installStep{Name: "Регистрация системных служб Systemd и UFW", Command: registerServicesCmd})
 
-	// === ШАГ 8: Очистка диска от зависимостей разработки
+	// === ШАГ 8: Очистка (с сохранением компиляторов, если опция не выбрана)
 	cleanupCmd := "rm -rf /opt/aimatos/vpn-frontend /opt/aimatos/aimatos-cli /tmp/aimatos-source && " +
-		"apt-get purge -y nodejs && rm -f /etc/apt/sources.list.d/nodesource.list && " +
-		"rm -rf /usr/local/go /usr/bin/go && " +
+		"go clean -cache -modcache 2>/dev/null || true && " +
+		"npm cache clean --force 2>/dev/null || true && " +
 		"apt-get autoremove -y && apt-get clean"
-	m.steps = append(m.steps, installStep{Name: "Очистка сборочного окружения и мусора", Command: cleanupCmd})
+
+	// Если пользователь явно выбрал удалить компиляторы (индекс 5)
+	if m.selectedOpts[5] {
+		cleanupCmd = "rm -rf /opt/aimatos/vpn-frontend /opt/aimatos/aimatos-cli /tmp/aimatos-source && " +
+			"apt-get purge -y nodejs && rm -f /etc/apt/sources.list.d/nodesource.list && " +
+			"rm -rf /usr/local/go /usr/bin/go && " +
+			"apt-get autoremove -y && apt-get clean"
+	}
+
+	m.steps = append(m.steps, installStep{Name: "Очистка сборочных исходников и кэша", Command: cleanupCmd})
 
 	m.steps[0].Status = "running"
 }
@@ -608,8 +611,8 @@ func (m model) renderContent() string {
 		s += "\n" + helpStyle.Render(" [↑/↓] Выбор пункта  •  [ ENTER ] Подтвердить ")
 
 	case stateOptimizationSelection:
-		s += titleStyle.Render("⚙️ Настройка оптимизаций системы ") + "\n"
-		s += subtitleStyle.Render("Выберите дополнительные модули тюнинга") + "\n\n"
+		s += titleStyle.Render("⚙️ Настройка параметров и оптимизаций ") + "\n"
+		s += subtitleStyle.Render("Отметьте нужные модули (Space — переключить)") + "\n\n"
 		for i, opt := range m.optList {
 			box := "[ ]"
 			if m.selectedOpts[i] {
@@ -621,7 +624,7 @@ func (m model) renderContent() string {
 				s += fmt.Sprintf("      %s %s\n", box, opt)
 			}
 		}
-		s += "\n" + helpStyle.Render(" [Space] Переключить  •  [↑/↓] Навигация  •  [ ENTER ] Продолжить ")
+		s += "\n" + helpStyle.Render(" [Space] Переключить  •  [↑/↓] Навигация  •  [ ENTER ] Начать установку ")
 
 	case stateComponentSelection:
 		s += titleStyle.Render("🧩  Выборочные компоненты ") + "\n"
@@ -718,7 +721,7 @@ func main() {
 			cmd.Stdin = os.Stdin
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
-			
+
 			_ = cmd.Run()
 		}
 	}
