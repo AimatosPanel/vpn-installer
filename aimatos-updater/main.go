@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"io"
@@ -55,10 +54,10 @@ const (
 )
 
 type UpdateStep struct {
-	Title   string
-	Action  func(m *model) error
-	State   StepState
-	ErrMsg  string
+	Title  string
+	Action func(m *model) error
+	State  StepState
+	ErrMsg string
 }
 
 type model struct {
@@ -76,12 +75,12 @@ type model struct {
 	termHeight  int
 }
 
-func initialModel() model {
+func initialModel() *model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(accentColor)
 
-	m := model{
+	m := &model{
 		spinner:    s,
 		startTime:  time.Now(),
 		masterPort: "8080",
@@ -90,21 +89,21 @@ func initialModel() model {
 	}
 
 	m.steps = []UpdateStep{
-		{Title: "Предварительная диагностика и проверка среды", Action: m.stepPreflight},
-		{Title: "Создание точки восстановления (Snapshot & DB)", Action: m.stepBackup},
-		{Title: "Проверка и подготовка компиляторов (Go & Node)", Action: m.stepCompilers},
-		{Title: "Загрузка свежих исходных кодов с GitHub", Action: m.stepFetchSource},
-		{Title: "Сборка фронтенда React 19 + Tailwind v4", Action: m.stepBuildFrontend},
-		{Title: "Компиляция ядра (Master, Node, CLI)", Action: m.stepBuildBinaries},
-		{Title: "Атомарное обновление файлов и рестарт служб", Action: m.stepDeploy},
-		{Title: "Контроль целостности и проверка готовности API", Action: m.stepHealthCheck},
-		{Title: "Очистка сборочного кэша и временных файлов", Action: m.stepCleanup},
+		{Title: "Предварительная диагностика и проверка среды", Action: (*model).stepPreflight},
+		{Title: "Создание точки восстановления (Snapshot & DB)", Action: (*model).stepBackup},
+		{Title: "Проверка и подготовка компиляторов (Go & Node)", Action: (*model).stepCompilers},
+		{Title: "Загрузка свежих исходных кодов с GitHub", Action: (*model).stepFetchSource},
+		{Title: "Сборка фронтенда React 19 + Tailwind v4", Action: (*model).stepBuildFrontend},
+		{Title: "Компиляция ядра (Master, Node, CLI)", Action: (*model).stepBuildBinaries},
+		{Title: "Атомарное обновление файлов и рестарт служб", Action: (*model).stepDeploy},
+		{Title: "Контроль целостности и проверка готовности API", Action: (*model).stepHealthCheck},
+		{Title: "Очистка сборочного кэша и временных файлов", Action: (*model).stepCleanup},
 	}
 
 	return m
 }
 
-func (m model) Init() tea.Cmd {
+func (m *model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.EnterAltScreen,
 		m.spinner.Tick,
@@ -125,7 +124,7 @@ func runNextStep(index int) tea.Cmd {
 
 type stepMsgTrigger struct{ index int }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
@@ -149,7 +148,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.steps[idx].State = StepRunning
 
 		return m, func() tea.Msg {
-			err := m.steps[idx].Action(&m)
+			err := m.steps[idx].Action(m)
 			return stepFinishedMsg{stepIndex: idx, err: err}
 		}
 
@@ -160,7 +159,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.hasError = true
 			m.elapsedTime = time.Since(m.startTime)
 
-			// Выполняем авто-откат при сбое
 			_ = m.performRollback()
 			return m, nil
 		}
@@ -172,7 +170,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, runNextStep(nextIdx)
 		}
 
-		// Завершено успешно
 		m.isFinished = true
 		m.elapsedTime = time.Since(m.startTime)
 		return m, nil
@@ -186,13 +183,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) View() string {
+func (m *model) View() string {
 	var b strings.Builder
 
 	b.WriteString(titleStyle.Render("⚡ AIMATOS SMART AUTO-UPDATER V2 ⚡") + "\n")
 	b.WriteString(subtitleStyle.Render("Интеллектуальный процесс бесшовного обновления") + "\n\n")
 
-	for i, step := range m.steps {
+	for _, step := range m.steps {
 		var icon string
 		var textStyle lipgloss.Style
 
@@ -230,7 +227,7 @@ func (m model) View() string {
 		b.WriteString(fmt.Sprintf("   Панель доступна по порту: %s\n\n", successStyle.Render(m.masterPort)))
 		b.WriteString(helpStyle.Render(" Нажмите [ ENTER ] для завершения "))
 	} else {
-		b.WriteString(helpStyle.Render(fmt.Sprintf(" Пожалуйста, подождите... Идет сборка компонентов ")))
+		b.WriteString(helpStyle.Render(" Пожалуйста, подождите... Идет сборка компонентов "))
 	}
 
 	inner := boxStyle.Render(b.String())
@@ -255,13 +252,11 @@ func execLog(cmdStr string) error {
 	return cmd.Run()
 }
 
-// Шаг 1: Предварительные проверки
 func (m *model) stepPreflight() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("требуются права root")
 	}
 
-	// Проверка свободного места (нужно минимум 500MB)
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs("/opt", &stat); err == nil {
 		availBytes := stat.Bavail * uint64(stat.Bsize)
@@ -270,7 +265,6 @@ func (m *model) stepPreflight() error {
 		}
 	}
 
-	// Читаем порт из сервиса vpn-master
 	if data, err := os.ReadFile("/etc/systemd/system/vpn-master.service"); err == nil {
 		re := regexp.MustCompile(`Environment=PORT=(\d+)`)
 		match := re.FindStringSubmatch(string(data))
@@ -282,7 +276,6 @@ func (m *model) stepPreflight() error {
 	return nil
 }
 
-// Шаг 2: Создание снимка для безопасного отката
 func (m *model) stepBackup() error {
 	_ = os.RemoveAll(m.backupSnap)
 	if err := os.MkdirAll(m.backupSnap, 0755); err != nil {
@@ -290,12 +283,10 @@ func (m *model) stepBackup() error {
 	}
 	_ = os.MkdirAll(BackupDir, 0755)
 
-	// Копируем текущие бинарники
 	_ = execLog(fmt.Sprintf("cp /opt/aimatos/vpn-master/vpn-master %s/ 2>/dev/null || true", m.backupSnap))
 	_ = execLog(fmt.Sprintf("cp /opt/aimatos/vpn-node/vpn-node %s/ 2>/dev/null || true", m.backupSnap))
 	_ = execLog(fmt.Sprintf("cp -r /opt/aimatos/vpn-master/dist %s/ 2>/dev/null || true", m.backupSnap))
 
-	// Безопасный бэкап SQLite (VACUUM INTO)
 	dbPath := filepath.Join(InstallDir, "vpn-master/panel.db")
 	if _, err := os.Stat(dbPath); err == nil {
 		backupDBName := fmt.Sprintf("panel_backup_%s.db", time.Now().Format("20060102_150405"))
@@ -307,29 +298,25 @@ func (m *model) stepBackup() error {
 			db.Close()
 		}
 
-		// Ротация: оставляем 3 последних бэкапа
 		_ = execLog(fmt.Sprintf("ls -t %s/panel_backup_*.db 2>/dev/null | tail -n +4 | xargs -r rm -f", BackupDir))
 	}
 
 	return nil
 }
 
-// Шаг 3: Проверка Go и Node.js
 func (m *model) stepCompilers() error {
-	// Node.js
 	if _, err := exec.LookPath("npm"); err != nil {
 		if err := execLog("curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs"); err != nil {
 			return fmt.Errorf("ошибка установки Node.js: %v", err)
 		}
 	}
 
-	// Go
 	needGo := false
 	if _, err := exec.LookPath("go"); err != nil {
 		needGo = true
 	} else {
 		out, _ := exec.Command("go", "version").Output()
-		if !strings.Contains(string(out), "go1.2") { // если старее go 1.20
+		if !strings.Contains(string(out), "go1.2") {
 			needGo = true
 		}
 	}
@@ -346,7 +333,6 @@ func (m *model) stepCompilers() error {
 	return nil
 }
 
-// Шаг 4: Клонирование репозиториев
 func (m *model) stepFetchSource() error {
 	_ = os.RemoveAll(m.buildDir)
 	_ = os.MkdirAll(m.buildDir, 0755)
@@ -361,7 +347,6 @@ func (m *model) stepFetchSource() error {
 	return nil
 }
 
-// Шаг 5: Сборка React фронтенда
 func (m *model) stepBuildFrontend() error {
 	cmdStr := fmt.Sprintf("cd %s/vpn-frontend && export NODE_OPTIONS='--max-old-space-size=512' && npm install && npm run build", m.buildDir)
 	if err := execLog(cmdStr); err != nil {
@@ -375,33 +360,26 @@ func (m *model) stepBuildFrontend() error {
 	return nil
 }
 
-// Шаг 6: Компиляция Go-бинарников
 func (m *model) stepBuildBinaries() error {
-	// Master
 	cmdMaster := fmt.Sprintf("cd %s/vpn-master && sed -i 's/go 1\\.25.*/go 1.22/g' go.mod 2>/dev/null || true && go mod tidy && go build -ldflags=\"-s -w\" -o vpn-master .", m.buildDir)
 	if err := execLog(cmdMaster); err != nil {
 		return fmt.Errorf("сбой компиляции vpn-master: %v", err)
 	}
 
-	// Node
 	cmdNode := fmt.Sprintf("cd %s/vpn-node && go mod tidy && go build -ldflags=\"-s -w\" -o vpn-node .", m.buildDir)
 	if err := execLog(cmdNode); err != nil {
 		return fmt.Errorf("сбой компиляции vpn-node: %v", err)
 	}
 
-	// CLI
 	cmdCLI := fmt.Sprintf("cd %s/vpn-installer/aimatos-cli && go mod tidy 2>/dev/null || true && go build -ldflags=\"-s -w\" -o aimatos .", m.buildDir)
-	_ = execLog(cmdCLI) // Ошибка CLI не фатальна для сервера
+	_ = execLog(cmdCLI)
 
 	return nil
 }
 
-// Шаг 7: Атомарная замена и перезапуск служб
 func (m *model) stepDeploy() error {
-	// Останавливаем службы
 	_ = execLog("systemctl stop vpn-master.service vpn-node.service 2>/dev/null || true")
 
-	// Копируем бинарники
 	if err := execLog(fmt.Sprintf("cp --remove-destination %s/vpn-master/vpn-master /opt/aimatos/vpn-master/vpn-master", m.buildDir)); err != nil {
 		return err
 	}
@@ -409,17 +387,12 @@ func (m *model) stepDeploy() error {
 		return err
 	}
 
-	// Копируем собранный фронтенд в Master
 	_ = execLog(fmt.Sprintf("rm -rf /opt/aimatos/vpn-master/dist && cp -r %s/vpn-frontend/dist /opt/aimatos/vpn-master/dist", m.buildDir))
-
-	// Обновляем CLI
 	_ = execLog(fmt.Sprintf("[ -f %s/vpn-installer/aimatos-cli/aimatos ] && cp --remove-destination %s/vpn-installer/aimatos-cli/aimatos /usr/local/bin/aimatos", m.buildDir, m.buildDir))
 
-	// Запускаем службы
 	return execLog("systemctl restart vpn-master.service vpn-node.service 2>/dev/null || true")
 }
 
-// Шаг 8: Health Check
 func (m *model) stepHealthCheck() error {
 	client := http.Client{Timeout: 1 * time.Second}
 	url := fmt.Sprintf("http://127.0.0.1:%s/health", m.masterPort)
@@ -438,7 +411,6 @@ func (m *model) stepHealthCheck() error {
 	return fmt.Errorf("API master не ответил статусом online на порту %s", m.masterPort)
 }
 
-// Шаг 9: Очистка кэша и временных файлов
 func (m *model) stepCleanup() error {
 	_ = os.RemoveAll(m.buildDir)
 	_ = os.RemoveAll(m.backupSnap)
@@ -448,7 +420,6 @@ func (m *model) stepCleanup() error {
 	return nil
 }
 
-// Откат к исходной рабочей версии
 func (m *model) performRollback() error {
 	_ = execLog("systemctl stop vpn-master.service vpn-node.service 2>/dev/null || true")
 	_ = execLog(fmt.Sprintf("[ -f %s/vpn-master ] && cp --remove-destination %s/vpn-master /opt/aimatos/vpn-master/vpn-master", m.backupSnap, m.backupSnap))
