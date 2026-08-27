@@ -1,47 +1,54 @@
 #!/bin/bash
-if [ "$EUID" -ne 0 ]; then
-  echo "Запустите от имени root."
-  exit 1
-fi
+set -eo pipefail
 
-echo "=== Модуль 1: Очистка системы и Сетевой экран ==="
+CLR_PURPLE="\033[1;35m"
+CLR_GREEN="\033[1;32m"
+CLR_GRAY="\033[0;90m"
+CLR_RESET="\033[0m"
 
-echo "-> Удаление cloud-init..."
+echo -e "\n${CLR_PURPLE}════ [ Модуль 1: Очистка системы и Сетевой экран ] ════${CLR_RESET}"
+
+# 1. Удаление cloud-init
+echo -e " ${CLR_PURPLE}➔${CLR_RESET} Отключение и удаление cloud-init..."
 systemctl stop cloud-init cloud-init-local cloud-config cloud-final 2>/dev/null || true
 systemctl disable cloud-init cloud-init-local cloud-config cloud-final 2>/dev/null || true
-apt purge -y cloud-init || true
+apt purge -y cloud-init >/dev/null 2>&1 || true
 rm -rf /etc/cloud/ /var/lib/cloud/
 
-echo "-> Удаление snapd..."
+# 2. Удаление snapd
+echo -e " ${CLR_PURPLE}➔${CLR_RESET} Удаление демона snapd..."
 systemctl stop snapd.service snapd.socket 2>/dev/null || true
 systemctl disable snapd.service snapd.socket 2>/dev/null || true
-apt purge -y snapd || true
+apt purge -y snapd >/dev/null 2>&1 || true
 rm -rf /var/cache/snapd /var/snap /snap
 
-echo "-> Ограничение консолей TTY..."
-sed -i 's/#NAutoVTs=6/NAutoVTs=1/' /etc/systemd/logind.conf
-systemctl restart systemd-logind
+# 3. Оптимизация TTY
+echo -e " ${CLR_PURPLE}➔${CLR_RESET} Ограничение неиспользуемых консолей TTY..."
+sed -i 's/#NAutoVTs=6/NAutoVTs=1/' /etc/systemd/logind.conf 2>/dev/null || true
+systemctl restart systemd-logind 2>/dev/null || true
 
-echo "-> Отключение неиспользуемых служб..."
-systemctl stop multipathd rpcbind unattended-upgrades lxd lxc-net 2>/dev/null || true
-systemctl disable multipathd rpcbind unattended-upgrades lxd lxc-net 2>/dev/null || true
-apt purge -y multipath-tools rpcbind unattended-upgrades || true
+# 4. Отключение лишних служб
+echo -e " ${CLR_PURPLE}➔${CLR_RESET} Отключение фоновых служб multipathd и rpcbind..."
+systemctl stop multipathd rpcbind lxd lxc-net 2>/dev/null || true
+systemctl disable multipathd rpcbind lxd lxc-net 2>/dev/null || true
+apt purge -y multipath-tools rpcbind >/dev/null 2>&1 || true
 
-echo "-> Очистка APT..."
-apt autoremove --purge -y
+# 5. Очистка пакетов
+echo -e " ${CLR_PURPLE}➔${CLR_RESET} Очистка кэша пакетов APT..."
+apt autoremove --purge -y >/dev/null 2>&1
 apt clean
 
-echo "-> Переход на nftables..."
+# 6. Сетевой экран nftables
+echo -e " ${CLR_PURPLE}➔${CLR_RESET} Переключение брандмауэра на nftables..."
 systemctl stop ufw firewalld 2>/dev/null || true
 systemctl disable ufw firewalld 2>/dev/null || true
-apt purge -y ufw firewalld || true
+apt purge -y ufw firewalld >/dev/null 2>&1 || true
 
-apt install -y nftables
-systemctl enable nftables
+apt install -y nftables >/dev/null 2>&1
+systemctl enable nftables >/dev/null 2>&1
 
-cat <<EOF > /etc/nftables.conf
+cat <<'EOF' > /etc/nftables.conf
 #!/usr/sbin/nft -f
-
 flush ruleset
 
 table inet filter {
@@ -56,6 +63,6 @@ table inet filter {
     }
 }
 EOF
-systemctl restart nftables
 
-echo "=== Скрипт 1 выполнен ==="
+systemctl restart nftables
+echo -e " ${CLR_GREEN}✓ Модуль 1 успешно применён!${CLR_RESET}"
